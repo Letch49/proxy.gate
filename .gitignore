@@ -1,0 +1,26 @@
+# SwiftPM build output
+.build/
+.swiftpm/
+Package.resolved
+
+# App bundle produced by scripts/build-app.sh / install.sh
+build/
+*.app
+*.icns
+*.iconset/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# temp
+.temp
