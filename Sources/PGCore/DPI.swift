@@ -38,6 +38,33 @@ public enum DPIEngine: String, Codable, Sendable, CaseIterable {
     public var title: String { self == .byedpi ? "ByeDPI" : "tpws" }
 
     public func strategies() -> [DPIStrategy] { self == .byedpi ? ByeDpiStrategies.all : DPIStrategies.all }
+
+    /// Loopback SOCKS port the core listens on.
+    public var socksPort: UInt16 { self == .byedpi ? PGConstants.byedpiSocksPort : PGConstants.tpwsSocksPort }
+
+    /// Label of the strategy at `index`, "" when out of range.
+    public func strategyLabel(_ index: Int) -> String {
+        strategies().indices.contains(index) ? strategies()[index].label : ""
+    }
+}
+
+/// Which DPI core, if any, a connection goes through. Pure, so the engine's routing is testable.
+public enum DPIRouting {
+    /// A `.directDPI` rule: its own core, else the primary; when that one is down, the other running
+    /// core; nil (plain direct) when none runs.
+    public static func ruleCore(_ ruleEngine: DPIEngine?, primary: DPIEngine, running: Set<DPIEngine>) -> DPIEngine? {
+        let wanted = ruleEngine ?? primary
+        if running.contains(wanted) { return wanted }
+        return DPIEngine.allCases.first { running.contains($0) }
+    }
+
+    /// A plain `.direct` route: through the primary core only when bypass is on, "all direct traffic"
+    /// is on and that core runs. Private/LAN destinations never need it.
+    public static func directCore(bypassOn: Bool, allDirect: Bool, primary: DPIEngine, running: Set<DPIEngine>,
+                                  privateDestination: Bool) -> DPIEngine? {
+        guard bypassOn, allDirect, !privateDestination, running.contains(primary) else { return nil }
+        return primary
+    }
 }
 
 /// ciadpi (ByeDPI) desync presets. Flags use ciadpi's own syntax: `-s` split, `-d` disorder, `-o`

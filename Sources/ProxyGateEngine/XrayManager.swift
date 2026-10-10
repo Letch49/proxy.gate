@@ -29,28 +29,35 @@ final class XrayManager: @unchecked Sendable {
 
     // MARK: - Install
 
-    /// Verifies `sha256` of the release zip the app downloaded, then installs the core binary and
-    /// its geoip/geosite databases (the provider's routing references them) into the support dir.
-    func install(fromZip path: String, version: String, sha256 expected: String) throws {
-        guard let data = FileManager.default.contents(atPath: path) else {
-            throw NetError("downloaded Xray archive not found at \(path)")
+    /// Installs the core binary and its geoip/geosite databases (the provider's routing references
+    /// them) from the release zip the app downloaded. The client only names the file: the engine
+    /// stages a copy, checks it against the release `.dgst` it fetches itself for `version`, and
+    /// unzips only that copy.
+    func install(fromZip path: String, version: String) throws {
+        guard let dgstURL = CoreReleases.xrayChecksumURL(tag: version, arm64: CoreReleases.isAppleSilicon) else {
+            throw NetError("rejected Xray version tag")
         }
-        let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
-            throw NetError("Xray archive checksum mismatch (expected \(expected.prefix(12))…, got \(actual.prefix(12))…)")
+        let dir = try CoreInstall.makeStagingDir()
+        defer { CoreInstall.remove(dir) }
+        let staged = try CoreInstall.stage(path, in: dir, name: "xray.zip")
+        let dgst = try CoreInstall.fetchText(dgstURL)
+        guard let expected = CoreReleases.parseDgst(dgst) else {
+            throw NetError("no SHA2-256 in the Xray release checksum file")
         }
-        try FileManager.default.createDirectory(atPath: PGConstants.supportDir, withIntermediateDirectories: true)
-        _ = Shell.run("/bin/chmod", ["755", PGConstants.supportDir])
-        let unzip = Shell.run("/usr/bin/unzip", ["-o", path, "xray", "-d", PGConstants.supportDir])
-        guard unzip.status == 0, FileManager.default.fileExists(atPath: PGConstants.xrayPath) else {
+        guard staged.sha256 == expected else { throw NetError("Xray archive checksum mismatch") }
+
+        let out = dir + "/out"
+        try CoreInstall.makeDir(out)
+        let unzip = Shell.run("/usr/bin/unzip", ["-qq", "-o", staged.path, "xray", "-d", out])
+        guard unzip.status == 0 else {
             throw NetError("could not extract the Xray core: \(unzip.output.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
         // geoip/geosite power the provider's routing; best-effort so a naming change can't block install.
-        _ = Shell.run("/usr/bin/unzip", ["-o", path, "geoip.dat", "geosite.dat", "-d", PGConstants.supportDir])
-        // Downloaded files carry a quarantine xattr that would stop launchd from running them.
-        _ = Shell.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", PGConstants.supportDir])
-        _ = Shell.run("/bin/chmod", ["755", PGConstants.xrayPath])
-        _ = Shell.run("/usr/sbin/chown", ["-R", "root:wheel", PGConstants.supportDir])
+        _ = Shell.run("/usr/bin/unzip", ["-qq", "-o", staged.path, "geoip.dat", "geosite.dat", "-d", out])
+        for name in ["geoip.dat", "geosite.dat"] {
+            try? CoreInstall.place(out + "/" + name, at: PGConstants.supportDir + "/" + name, mode: 0o644)
+        }
+        try CoreInstall.place(out + "/xray", at: PGConstants.xrayPath, mode: 0o755)
         try version.write(toFile: PGConstants.xrayVersionPath, atomically: true, encoding: .utf8)
     }
 

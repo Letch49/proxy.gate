@@ -8,37 +8,6 @@ struct DPIPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 PageHeader(title: "DPI bypass", subtitle: "Defeats ISP DPI on direct routes. It never touches VPN or proxy traffic.") {
-                    if dpiBusy {
-                        ProgressView().controlSize(.small)
-                        if let m = dpiMessage { Text(m).font(.caption).foregroundStyle(Theme.text3) }
-                    }
-                    Button(model.dpiCoreInstalled ? "Update Core" : "Install Core") { installActive() }
-                        .buttonStyle(GhostButtonStyle())
-                        .disabled(dpiBusy || !model.engineConnected)
-                }
-
-                enginePicker
-
-                if !model.dpiCoreInstalled {
-                    NoticeBanner(text: notInstalledNote)
-                }
-
-                ToggleCard(isOn: Binding(get: { model.bypassEnabled }, set: { model.setBypass($0) }),
-                           title: "DPI bypass", note: modeNote, disabled: !model.dpiCoreInstalled) {
-                    if model.bypassEnabled {
-                        StatusPill(text: model.dpiCoreRunning ? String(localized: "Running") : String(localized: "Starting…"),
-                                   tone: model.dpiCoreRunning ? .ok : .warn)
-                    }
-                }
-                if let error = model.dpiCoreError {
-                    Text(error).font(.caption).foregroundStyle(Theme.warnFg).textSelection(.enabled)
-                }
-
-                if model.dpiCoreInstalled {
-                    autohostlistCard
-                }
-
-                SectionHeader(title: "Strategy") {
                     if model.tuning {
                         ProgressView().controlSize(.small)
                         Text(progressText).font(.caption).foregroundStyle(Theme.text3).lineLimit(1)
@@ -46,29 +15,18 @@ struct DPIPage: View {
                     } else {
                         Button("⚡ Auto-tune") { model.tuneBypass() }
                             .buttonStyle(AccentButtonStyle())
-                            .disabled(!anyCoreInstalled)
+                            .disabled(!model.anyDPICoreInstalled || !model.engineConnected)
                     }
                 }
 
-                if let report = model.tuneReport, !model.tuning {
-                    TuneReportCard(report: report)
-                }
-                VStack(spacing: 8) {
-                    ForEach(Array(model.activeStrategies.enumerated()), id: \.offset) { index, strategy in
-                        ChoiceRow(title: strategy.label, detail: strategy.flags.joined(separator: " "),
-                                  selected: index == model.bypassStrategyIndex) {
-                            model.selectStrategy(index)
-                        }
-                    }
-                }
-                Text("Auto-tune checks DNS first, then each strategy of the installed cores. Effectiveness depends on your ISP.")
-                    .font(.caption).foregroundStyle(Theme.text3)
+                bypassBlock
+                rulesBlock
+                checkBlock
+                coresBlock
             }
             .padding(.horizontal, 24).padding(.vertical, 18)
         }
     }
-
-    private var anyCoreInstalled: Bool { model.tpwsVersion != nil || model.byedpiVersion != nil }
 
     private var progressText: String {
         guard let p = model.tuneProgress else { return String(localized: "Starting…") }
@@ -79,75 +37,163 @@ struct DPIPage: View {
         }
     }
 
-    private var modeNote: String {
-        if !model.bypassEnabled { return String(localized: "Off") }
-        if model.activeBridge == .direct {
-            return String(localized: "VPN/proxy off — bypass applies to all traffic.")
-        }
-        return String(localized: "VPN/proxy on — bypass applies only to Direct rules.")
-    }
+    // MARK: Main switch
 
-    private var dpiBusy: Bool { model.dpiEngine == .byedpi ? model.byedpiBusy : model.tpwsBusy }
-    private var dpiMessage: String? { model.dpiEngine == .byedpi ? model.byedpiMessage : model.tpwsMessage }
-    private func installActive() { model.dpiEngine == .byedpi ? model.installByedpi() : model.installTpws() }
-    private var notInstalledNote: String {
-        model.dpiEngine == .byedpi
-            ? String(localized: "ByeDPI is not installed yet.")
-            : String(localized: "The DPI-bypass core (tpws) is not installed yet.")
-    }
-
-    private var enginePicker: some View {
-        HStack(spacing: 12) {
-            engineCard(.tpws, note: "Split, disorder, OOB.")
-            engineCard(.byedpi, note: "Split, disorder, OOB, TLS records. Another way to cut the request.")
-        }
-    }
-
-    private func engineCard(_ engine: DPIEngine, note: LocalizedStringKey) -> some View {
-        let selected = model.dpiEngine == engine
-        let installed = engine == .byedpi ? model.byedpiVersion != nil : model.tpwsVersion != nil
-        return Button { model.setDpiEngine(engine) } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                        .foregroundStyle(selected ? Theme.accent : Theme.text3)
-                    Text(engine.title).font(.system(size: 13.5, weight: .semibold))
-                    Spacer()
-                    if installed { StatusPill(text: String(localized: "Installed")) }
-                }
-                Text(note).font(.system(size: 11.5)).foregroundStyle(Theme.text2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-            .card(radius: 12, border: selected ? Theme.accentBorder : Theme.border)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var autohostlistCard: some View {
+    private var bypassBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 14) {
-                Toggle("", isOn: Binding(
-                    get: { model.profile.bypassAutohostlist },
-                    set: { model.profile.bypassAutohostlist = $0 }))
-                    .toggleStyle(.switch).controlSize(.mini).labelsHidden()
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Bypass only blocked hosts").font(.system(size: 13, weight: .semibold))
-                    Text(autohostlistNote).font(.system(size: 11)).foregroundStyle(Theme.text2).lineLimit(2)
+            ToggleCard(isOn: Binding(get: { model.bypassEnabled }, set: { model.setBypass($0) }),
+                       title: "DPI bypass", note: bypassNote, disabled: !model.anyDPICoreInstalled) {
+                if model.bypassEnabled {
+                    StatusPill(text: bypassStatus.text, tone: bypassStatus.tone)
+                }
+            }
+            HStack(spacing: 12) {
+                Toggle("All direct traffic", isOn: Binding(
+                    get: { model.bypassAllDirect }, set: { model.setBypassAllDirect($0) }))
+                    .toggleStyle(.switch).controlSize(.mini)
+                    .disabled(!model.anyDPICoreInstalled)
+                    .help("Bypass for every Direct route, not only the rules below")
+                if model.installedDPIEngines.count > 1 {
+                    Picker("Core", selection: Binding(
+                        get: { model.primaryDPIEngine }, set: { model.setPrimaryDPIEngine($0) })) {
+                        ForEach(model.installedDPIEngines, id: \.self) { engine in
+                            Text(verbatim: engine.title).tag(engine)
+                        }
+                    }
+                    .pickerStyle(.segmented).fixedSize()
                 }
                 Spacer()
-                if !model.profile.bypassHosts.isEmpty {
-                    StatusPill(text: "\(model.profile.bypassHosts.count)")
+            }
+            .padding(.horizontal, 14)
+        }
+    }
+
+    private var runningCores: [DPIEngine] { model.installedDPIEngines.filter { model.coreRunning($0) } }
+
+    private var bypassNote: String {
+        if !model.anyDPICoreInstalled { return String(localized: "No DPI core installed") }
+        if !model.bypassEnabled { return String(localized: "Off") }
+        let cores = runningCores.isEmpty ? model.installedDPIEngines : runningCores
+        return cores.map(\.title).joined(separator: " + ")
+    }
+
+    private var bypassStatus: (text: String, tone: StatusTone) {
+        if model.installedDPIEngines.contains(where: { model.coreError($0) != nil }) {
+            return (String(localized: "Error"), .fail)
+        }
+        if !runningCores.isEmpty { return (String(localized: "Running"), .ok) }
+        return (String(localized: "Starting…"), .warn)
+    }
+
+    // MARK: Rules
+
+    private var rulesBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(title: "Rules with bypass") {
+                Button { model.newDPIRule() } label: { Label("Rule", systemImage: "plus") }
+                    .buttonStyle(GhostButtonStyle())
+            }
+            if model.dpiRules.isEmpty {
+                Text("Add a Direct + DPI rule to bypass DPI for chosen sites.")
+                    .font(.caption).foregroundStyle(Theme.text3)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(model.dpiRules) { rule in
+                        DPIRuleRow(rule: rule)
+                    }
+                }
+                Text("Rules come from the Rules page. Auto-tune checks each one.")
+                    .font(.caption).foregroundStyle(Theme.text3)
+            }
+        }
+    }
+
+    // MARK: Check
+
+    private var checkBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader("DPI check")
+            TestHostsCard()
+            if let report = model.tuneReport, !model.tuning {
+                TuneReportCard(report: report)
+            }
+        }
+    }
+
+    // MARK: Cores
+
+    private var coresBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader("Cores")
+            if model.installedDPIEngines.isEmpty {
+                NoticeBanner(text: String(localized: "Install a DPI core in Settings.")) {
+                    Button("Open Settings") { model.section = .settings }.buttonStyle(GhostButtonStyle())
+                }
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(model.installedDPIEngines, id: \.self) { engine in
+                        CoreRow(engine: engine)
+                    }
                 }
             }
-            if !model.profile.bypassHosts.isEmpty {
+        }
+    }
+}
+
+/// One Direct + DPI rule: its switch, name, and what auto-tune found for it.
+private struct DPIRuleRow: View {
+    @Environment(AppModel.self) private var model
+    let rule: Rule
+
+    var body: some View {
+        let result = model.ruleTuneResult(rule.id)
+        HStack(spacing: 12) {
+            Toggle("", isOn: Binding(get: { rule.enabled }, set: { model.setRuleEnabled(rule.id, $0) }))
+                .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+            Text(verbatim: rule.name).font(.system(size: 13.5))
+                .foregroundStyle(rule.enabled ? Theme.text : Theme.text3)
+                .lineLimit(1)
+            Spacer()
+            if let detail = detail(result) {
+                Text(verbatim: detail).font(Theme.mono).foregroundStyle(Theme.text3)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            let pill = status(result)
+            StatusPill(text: pill.text, tone: pill.tone)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.border))
+    }
+
+    private func detail(_ result: RuleTuneResult?) -> String? {
+        guard let result, result.ok, let engine = result.engine else { return rule.dpiEngine?.title }
+        let strategies = engine.strategies()
+        guard strategies.indices.contains(result.strategyIndex) else { return engine.title }
+        return "\(engine.title) · \(strategies[result.strategyIndex].label)"
+    }
+
+    private func status(_ result: RuleTuneResult?) -> (text: String, tone: StatusTone) {
+        guard let result else { return (String(localized: "Not tested"), .neutral) }
+        if !result.ok { return (String(localized: "No strategy"), .fail) }
+        if let ms = result.latencyMs { return (String(localized: "OK · \(ms) ms"), .ok) }
+        return (String(localized: "OK"), .ok)
+    }
+}
+
+/// The hosts auto-tune probes, as removable chips plus a field to add one.
+private struct TestHostsCard: View {
+    @Environment(AppModel.self) private var model
+    @State private var newHost = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !model.dpiTestHostList.isEmpty {
                 FlowLayout(spacing: 6) {
-                    ForEach(model.profile.bypassHosts, id: \.self) { host in
-                        Button { model.profile.bypassHosts.removeAll { $0 == host } } label: {
+                    ForEach(model.dpiTestHostList, id: \.self) { host in
+                        Button { model.removeDpiTestHost(host) } label: {
                             HStack(spacing: 5) {
-                                Text(host).font(Theme.mono)
+                                Text(verbatim: host).font(Theme.mono)
                                 Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
                             }
                             .padding(.horizontal, 8).padding(.vertical, 3)
@@ -158,29 +204,91 @@ struct DPIPage: View {
                         .help("Remove from the list")
                     }
                 }
-                Button("Clear list") { model.profile.bypassHosts = [] }
-                    .buttonStyle(GhostButtonStyle())
             }
+            HStack(spacing: 8) {
+                TextField("", text: $newHost, prompt: Text(verbatim: "youtube.com"))
+                    .textFieldStyle(.roundedBorder).font(Theme.mono)
+                    .frame(maxWidth: 240)
+                    .onSubmit(add)
+                Button("Add", action: add)
+                    .buttonStyle(GhostButtonStyle())
+                    .disabled(trimmed.isEmpty)
+                Spacer()
+            }
+            Text("Sites to test. During the test they always go direct.")
+                .font(.caption).foregroundStyle(Theme.text3)
         }
         .padding(14).card(radius: 12)
     }
 
-    private var autohostlistNote: String {
-        if !model.profile.bypassAutohostlist {
-            return String(localized: "Bypass applies to all direct traffic.")
-        }
-        if model.profile.bypassHosts.isEmpty {
-            return String(localized: "Learning. Until the list fills, bypass applies to all direct traffic. Run Auto-tune to seed it.")
-        }
-        return String(localized: "Bypass is applied only to these hosts.")
+    private var trimmed: String { newHost.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private func add() {
+        guard !trimmed.isEmpty else { return }
+        model.addDpiTestHost(trimmed)
+        newHost = ""
     }
 }
 
-/// The auto-tune outcome: verdict with the chosen DNS + core + strategy, launch errors as they are,
-/// then one diagnosed row per test host.
+/// One installed DPI core: its current strategy, state, and a menu to pick a strategy by hand.
+private struct CoreRow: View {
+    @Environment(AppModel.self) private var model
+    let engine: DPIEngine
+
+    var body: some View {
+        let strategies = engine.strategies()
+        let current = model.strategyIndex(for: engine)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Text(verbatim: engine.title).font(.system(size: 13.5))
+                if let version = model.coreVersion(engine) {
+                    Text(verbatim: version).font(.caption).foregroundStyle(Theme.text3)
+                }
+                Spacer()
+                if strategies.indices.contains(current) {
+                    Text(verbatim: strategies[current].label).font(Theme.mono).foregroundStyle(Theme.text3)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                if model.coreBusy(engine) { ProgressView().controlSize(.small) }
+                StatusPill(text: status.text, tone: status.tone)
+                Menu {
+                    ForEach(Array(strategies.enumerated()), id: \.offset) { index, strategy in
+                        Button { model.selectStrategy(index, for: engine) } label: {
+                            if index == current {
+                                Label(strategy.label, systemImage: "checkmark")
+                            } else {
+                                Text(verbatim: strategy.label)
+                            }
+                        }
+                    }
+                } label: {
+                    Text("Manual")
+                }
+                .menuStyle(.borderlessButton).fixedSize().buttonStyle(GhostButtonStyle())
+                .help("Pick a strategy by hand")
+            }
+            if let error = model.coreError(engine) {
+                Text(error).font(.caption).foregroundStyle(Theme.warnFg).textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.border))
+    }
+
+    private var status: (text: String, tone: StatusTone) {
+        if model.coreError(engine) != nil { return (String(localized: "Error"), .fail) }
+        if model.coreRunning(engine) { return (String(localized: "Running"), .ok) }
+        return (String(localized: "Installed"), .neutral)
+    }
+}
+
+/// The last auto-tune outcome: one verdict line with the chosen DNS + core + strategy, launch
+/// errors as they are, and the per-host table behind "Details".
 private struct TuneReportCard: View {
     @Environment(AppModel.self) private var model
     let report: TuneReport
+    @State private var showDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -192,17 +300,9 @@ private struct TuneReportCard: View {
                 }
             }
             ForEach(Array(report.launchErrors.enumerated()), id: \.offset) { _, e in
-                Text("\(e.engine.title) · \(e.strategy): \(e.message)")
+                Text(verbatim: "\(e.engine.title) · \(e.strategy): \(e.message)")
                     .font(.caption).foregroundStyle(Theme.warnFg).textSelection(.enabled)
             }
-            VStack(spacing: 0) {
-                ForEach(Array(report.hosts.enumerated()), id: \.offset) { i, probe in
-                    if i > 0 { RowDivider() }
-                    let s = TuneText.row(probe, provider: model.profile.dns.upstream.title)
-                    DiagnosticRow(subject: probe.host, detail: s.detail, status: s.status, tone: s.tone)
-                }
-            }
-            .card(radius: 12)
             if !unresolved.isEmpty {
                 HStack {
                     Text("Apps can't resolve some of these sites.").font(.caption).foregroundStyle(Theme.warnFg)
@@ -210,6 +310,21 @@ private struct TuneReportCard: View {
                     Button("Resolve via \(model.profile.dns.upstream.title)") { model.resolveThroughProvider(hosts: unresolved) }
                         .buttonStyle(GhostButtonStyle())
                 }
+            }
+            if !report.hosts.isEmpty {
+                DisclosureGroup("Details", isExpanded: $showDetails) {
+                    VStack(spacing: 0) {
+                        ForEach(Array(report.hosts.enumerated()), id: \.offset) { i, probe in
+                            if i > 0 { RowDivider() }
+                            let s = TuneText.row(probe, provider: model.profile.dns.upstream.title)
+                            DiagnosticRow(subject: probe.host, detail: s.detail, status: s.status, tone: s.tone)
+                        }
+                    }
+                    .card(radius: 12)
+                    .padding(.top, 6)
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.text2)
             }
             if report.verdict == .found {
                 Text("A page that opens doesn't prove video works. Check playback too.")

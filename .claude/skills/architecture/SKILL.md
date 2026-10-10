@@ -38,7 +38,7 @@ Rules are ordered, first enabled match wins, Default is last. Matching is in `PG
 and is action-independent, so the target grammar is the same for every action. See the "Rule
 targets" section in CLAUDE.md for the grammar, and [mcp-proxy-gate] for how agents use it.
 
-Actions: direct, block, global, vpn, dpi (direct through the DPI core), proxy(id), chain(id).
+Actions: direct, block, global, vpn, dpi (direct through a DPI core, `Rule.dpiEngine` or the primary), proxy(id), chain(id).
 A "bridge" is the egress a `.global` rule resolves to right now: direct, vpn or a proxy. The app
 picks the active bridge from interface state (a wired adapter wins) and pushes it to the engine;
 `.vpn` resolves to the VPN when its core is up, else to block so a "VPN only" rule never leaks.
@@ -49,26 +49,35 @@ picks the active bridge from interface state (a wired adapter wins) and pushes i
   with the inbound swapped for a local SOCKS inbound on a loopback port. Fetched with a Happ-style
   User-Agent over the system trust store. Geo routing (geosite/geoip) can run inside Xray or in our
   own rules (see GeoDB below). Typical configs are VLESS + REALITY.
-- DPI bypass = a local SOCKS proxy on loopback, one of two engines picked per profile
-  (`Profile.dpiEngine`): tpws (zapret) or ByeDPI/ciadpi. On macOS both do payload-level desync only
-  (split, disorder, oob, TLS-record split); the macOS ciadpi has no fake packets (`-f`) or md5sig
-  (`-S`), and presets with them crash it, so they are not offered. Managers `TpwsManager` /
-  `ByeDpiManager`; routing dials the active engine's SOCKS port and always hands it the dialed IP,
-  never a name (the core would resolve through the possibly broken system DNS). It is a MODIFIER on
-  the direct path, not a bridge: applied to all direct traffic when no VPN/proxy is active, only to
-  Direct rules otherwise, never over a VPN or proxy. Autohostlist narrows it to learned blocked hosts
-  (`DPIBypassList`). ByeDPI has no upstream macOS build, so its binary comes from a fork with the
-  tarball sha256 pinned in `ByeDpiDownloader`.
-- Auto-tune (`BypassTuner`, report types in `PGCore/BypassTune.swift`) runs stages and reports the
-  first one that failed per host, so DNS or launch problems never read as "no strategy": DNS
-  (system resolver, then the profile's provider directly), TCP to the IP, plain HTTPS without
-  bypass (from a pf-passed source port), then each strategy of the active and then the other
-  installed core. One throwaway core per strategy, up to 4 at once (`DPIProbeSession` slots, own launchd label and port each,
-  runs as the service user, must open its port or its log tail is the error; tpws flags also pass
-  `--dry-run`), every pending host curled through it in parallel with `--resolve host:443:ip` (real
-  SNI and certificate check, no system DNS, never through VPN/proxy). Cancel via `cancelTune`.
-  The winner opens the most hosts; the app switches engine/strategy to it. A page that opens does
-  not prove video works.
+- DPI bypass = local SOCKS proxies on loopback: tpws (zapret) and ByeDPI/ciadpi. Every installed
+  core runs while bypass is on, each with its own strategy (`Profile.tpwsStrategyIndex`,
+  `byedpiStrategyIndex`); `Profile.dpiEngine` is the primary core. On macOS both do payload-level
+  desync only (split, disorder, oob, TLS-record split); the macOS ciadpi has no fake packets (`-f`)
+  or md5sig (`-S`), and presets with them crash it, so they are not offered. Managers `TpwsManager` /
+  `ByeDpiManager`; routing always hands the core the dialed IP, never a name (the core would resolve
+  through the possibly broken system DNS). It is a MODIFIER on the direct path, never over a VPN or
+  proxy (`DPIRouting` in `PGCore/DPI.swift`):
+  - a `.directDPI` rule goes through `rule.dpiEngine ?? primary`, else the other running core, else
+    plain direct;
+  - plain `.direct` goes through the primary core only when `Profile.bypassAllDirect` is on (off by
+    default). There is no learned host list; rules are the one source of truth.
+  ByeDPI has no upstream macOS build, so its binary comes from a fork with the tarball sha256 pinned
+  in `CoreReleases.byedpiBuilds`.
+- The YouTube preset (`Profile.youTubePreset`) is a disabled Direct + DPI rule seeded first, once
+  per profile (`youTubePresetOffered`), with its own probe hosts (`Rule.testHosts`), since `*.` and
+  `geosite:` targets cannot be probed.
+- Auto-tune (`BypassTuner`, report types in `PGCore/BypassTune.swift`) probes the general test hosts
+  (`Profile.dpiTestHosts`, default discord.com, instagram.com, rutracker.org; editable on the DPI page) plus each Direct + DPI rule's
+  probe hosts (`TuneHosts.probeHosts`: `testHosts`, else plain names from the targets; the engine
+  re-checks socket input with `TuneHosts.sanitize`). It reports the first failed stage per host, so
+  DNS or launch problems never read as "no strategy": DNS (system, then the profile's provider),
+  TCP to the IP, plain HTTPS without bypass (pf-passed source port), then strategies. All installed
+  cores are tested at once, 4 throwaway cores each (`DPIProbeSession.slots`, own launchd label and
+  port per slot: tpws 52151-52154, ByeDPI 52161-52164), each curling every pending host with
+  `--resolve host:443:ip` (real SNI, no system DNS, never through VPN/proxy). `TuneChoice` keeps one
+  strategy per core (most hosts opened), then picks a core per rule (`TuneReport.rules`); the app
+  applies both and sets `rule.dpiEngine`. Cancel via `cancelTune`. A page that opens does not prove
+  video works.
 - AnyConnect = openconnect for split-tunnel corporate access, runs as root for the utun and routes.
   Split routes are captured from the routing table by the tunnel's utun interface and added to a
   dynamic pf bypass so corp traffic reaches the tunnel while the rest keeps flowing. The vpnc-script
@@ -108,6 +117,7 @@ the app reinstalls the helper. App-only changes do not need a bump.
 
 ## Downloaded cores
 
-Xray and tpws are downloaded by the app, SHA256-verified, then handed to the engine, which
-re-verifies before install. Verify before clearing the quarantine xattr. See [security] for the
+The app downloads the cores and hands the files to the engine. The engine stages its own copy and
+verifies it against a hash it gets itself (Xray `.dgst`, zapret `sha256sum.txt`, a pinned ByeDPI
+table), never one sent by the client. Verify before clearing the quarantine xattr. See [security] for the
 supply-chain caveat under network TLS inspection.

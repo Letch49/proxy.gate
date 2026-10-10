@@ -309,9 +309,20 @@ private func report(_ hosts: [HostProbe], engine: DPIEngine? = nil, index: Int =
     h.dnsSource = "Google (DoH)"
     let r = TuneReport(engine: .byedpi, strategyIndex: 1, cancelled: false, hosts: [h],
                        launchErrors: [EngineLaunchError(engine: .tpws, strategy: "x", message: "invalid option")], dnsSource: "Google (DoH)")
-    let msg = EngineMessage.bypassTuned(r)
+    var full = r
+    full.rules = [RuleTuneResult(ruleID: UUID(), hosts: [h], engine: .byedpi, strategyIndex: 1, ok: true, latencyMs: 80)]
+    full.byedpiStrategyIndex = 1
+    let msg = EngineMessage.bypassTuned(full)
     let back = try JSONDecoder().decode(EngineMessage.self, from: JSONEncoder().encode(msg))
     guard case .bypassTuned(let decoded) = back else { Issue.record("wrong case"); return }
     #expect(decoded.hosts == [h])
     #expect(decoded.verdict == .found)
+    #expect(decoded.rules == full.rules)
+    #expect(decoded.chosenStrategy(for: .byedpi) == 1 && decoded.chosenStrategy(for: .tpws) == nil)
+
+    let cmd = ClientCommand.tuneBypass(hosts: ["a.example.com"], rules: [TuneRuleInput(id: UUID(), hosts: ["b.example.com"])])
+    guard case .tuneBypass(let hosts, let rules) = try JSONDecoder().decode(ClientCommand.self, from: JSONEncoder().encode(cmd)) else {
+        Issue.record("wrong case"); return
+    }
+    #expect(hosts == ["a.example.com"] && rules.first?.hosts == ["b.example.com"])
 }

@@ -101,24 +101,77 @@ public struct EngineLaunchError: Codable, Sendable, Hashable {
     }
 }
 
+/// One `.directDPI` rule to tune: its id and the hosts to probe for it (already derived by the app,
+/// re-validated by the engine).
+public struct TuneRuleInput: Codable, Sendable, Hashable {
+    public var id: UUID
+    public var hosts: [String]
+
+    public init(id: UUID, hosts: [String]) {
+        self.id = id
+        self.hosts = hosts
+    }
+}
+
+/// The auto-tune's answer for one `.directDPI` rule.
+public struct RuleTuneResult: Codable, Sendable, Hashable {
+    public var ruleID: UUID
+    /// The rule's probe hosts, each with the engine/strategy that opened it (if any).
+    public var hosts: [HostProbe]
+    /// The core whose chosen strategy opens the most of this rule's hosts, nil when none does.
+    public var engine: DPIEngine?
+    public var strategyIndex: Int
+    /// Every probe host opens, with the bypass or without it.
+    public var ok: Bool
+    /// Mean time of a full request through the chosen core, over the hosts it opened.
+    public var latencyMs: Int?
+
+    public init(ruleID: UUID, hosts: [HostProbe], engine: DPIEngine?, strategyIndex: Int, ok: Bool, latencyMs: Int?) {
+        self.ruleID = ruleID
+        self.hosts = hosts
+        self.engine = engine
+        self.strategyIndex = strategyIndex
+        self.ok = ok
+        self.latencyMs = latencyMs
+    }
+
+    /// All hosts open without any bypass: the rule is not needed right now.
+    public var notBlocked: Bool { !hosts.isEmpty && hosts.allSatisfy(\.directOK) }
+}
+
 public struct TuneReport: Codable, Sendable {
-    /// The winning engine and its strategy index, nil / -1 when nothing worked.
+    /// The engine and strategy that open the most of the general test hosts, nil / -1 when none.
     public var engine: DPIEngine?
     public var strategyIndex: Int
     public var cancelled: Bool
+    /// The general test hosts.
     public var hosts: [HostProbe]
     public var launchErrors: [EngineLaunchError]
     /// Resolver used when the system DNS failed, nil when it was not needed.
     public var dnsSource: String?
+    /// Per-rule results, one for each tuned `.directDPI` rule.
+    public var rules: [RuleTuneResult]
+    /// The one strategy chosen per core (opens the most hosts overall), nil when it opened none.
+    public var tpwsStrategyIndex: Int?
+    public var byedpiStrategyIndex: Int?
 
     public init(engine: DPIEngine?, strategyIndex: Int, cancelled: Bool, hosts: [HostProbe],
-                launchErrors: [EngineLaunchError], dnsSource: String?) {
+                launchErrors: [EngineLaunchError], dnsSource: String?, rules: [RuleTuneResult] = [],
+                tpwsStrategyIndex: Int? = nil, byedpiStrategyIndex: Int? = nil) {
         self.engine = engine
         self.strategyIndex = strategyIndex
         self.cancelled = cancelled
         self.hosts = hosts
         self.launchErrors = launchErrors
         self.dnsSource = dnsSource
+        self.rules = rules
+        self.tpwsStrategyIndex = tpwsStrategyIndex
+        self.byedpiStrategyIndex = byedpiStrategyIndex
+    }
+
+    /// The strategy the tune chose for `engine`, nil when none of its strategies opened anything.
+    public func chosenStrategy(for engine: DPIEngine) -> Int? {
+        engine == .byedpi ? byedpiStrategyIndex : tpwsStrategyIndex
     }
 
     public enum Verdict: Equatable, Sendable {
@@ -140,9 +193,12 @@ public struct TuneReport: Codable, Sendable {
     public var verdict: Verdict {
         if cancelled { return .cancelled }
         if engine != nil, strategyIndex >= 0 { return .found }
-        if !hosts.isEmpty, hosts.allSatisfy(\.directOK) { return .notBlocked }
+        // A rule the tune opened counts too: the general list may be empty or not blocked.
+        if rules.contains(where: { $0.engine != nil }) { return .found }
+        let all = hosts + rules.flatMap(\.hosts)
+        if !all.isEmpty, all.allSatisfy(\.directOK) { return .notBlocked }
         let dnsFailures: Set<ProbeFailure> = [.dnsNotFound, .dnsTimeout, .dnsFailed]
-        let pending = hosts.filter { !$0.directOK }
+        let pending = all.filter { !$0.directOK }
         if !pending.isEmpty, pending.allSatisfy({ $0.failure.map(dnsFailures.contains) ?? false }) { return .dnsProblem }
         let reachable = pending.filter { !($0.failure.map(dnsFailures.contains) ?? false) }
         if !reachable.isEmpty, reachable.allSatisfy({ $0.failure == .tcpFailed }) { return .ipBlocked }
@@ -176,6 +232,150 @@ public struct TuneProgress: Codable, Sendable, Hashable {
         self.strategy = strategy
         self.step = step
         self.total = total
+    }
+}
+
+/// What one strategy of one core opened: host -> time of the full request in ms (nil if unknown).
+public struct StrategyOutcome: Sendable, Hashable {
+    public var engine: DPIEngine
+    public var index: Int
+    public var opened: [String: Int?]
+
+    public init(engine: DPIEngine, index: Int, opened: [String: Int?]) {
+        self.engine = engine
+        self.index = index
+        self.opened = opened
+    }
+}
+
+/// How the auto-tune turns "which strategy opened which host" into settings. Pure, so it is tested
+/// apart from the probes.
+public enum TuneChoice {
+    /// One strategy per core, since a core runs one strategy at a time: the one that opened the most
+    /// hosts. Ties go to the earlier, simpler strategy. A core whose strategies opened nothing is
+    /// left out.
+    public static func strategies(_ outcomes: [StrategyOutcome]) -> [DPIEngine: Int] {
+        var best: [DPIEngine: StrategyOutcome] = [:]
+        for o in outcomes.sorted(by: { $0.index < $1.index }) where !o.opened.isEmpty {
+            if let b = best[o.engine], b.opened.count >= o.opened.count { continue }
+            best[o.engine] = o
+        }
+        return best.mapValues(\.index)
+    }
+
+    public struct Pick: Equatable, Sendable {
+        public var engine: DPIEngine
+        public var index: Int
+        public var opened: Int
+        public var latencyMs: Int?
+    }
+
+    /// For a group of hosts (one rule's, or the general list): the core whose chosen strategy opens
+    /// the most of them; then the lower mean latency; then `order` (the primary core first).
+    public static func pick(hosts: [String], outcomes: [StrategyOutcome], chosen: [DPIEngine: Int],
+                            order: [DPIEngine]) -> Pick? {
+        let engines = order + DPIEngine.allCases.filter { !order.contains($0) }
+        var best: Pick?
+        for engine in engines {
+            guard let index = chosen[engine],
+                  let outcome = outcomes.first(where: { $0.engine == engine && $0.index == index }) else { continue }
+            let hits: [Int?] = hosts.compactMap { outcome.opened[$0] }
+            guard !hits.isEmpty else { continue }
+            let times = hits.compactMap { $0 }
+            let latency = times.isEmpty ? nil : times.reduce(0, +) / times.count
+            let candidate = Pick(engine: engine, index: index, opened: hits.count, latencyMs: latency)
+            guard let current = best else { best = candidate; continue }
+            if candidate.opened > current.opened {
+                best = candidate
+            } else if candidate.opened == current.opened, let l = latency, l < (current.latencyMs ?? Int.max) {
+                best = candidate
+            }
+        }
+        return best
+    }
+}
+
+/// Host lists for the auto-tune: the user's test hosts and the probe hosts of each `.directDPI` rule.
+public enum TuneHosts {
+    /// Probe hosts per rule, general test hosts, rules, and unique hosts in one run.
+    public static let perRule = 3
+    public static let maxGeneral = 10
+    public static let maxRules = 32
+    public static let maxTotal = 24
+
+    /// One host as typed: lowercased, without scheme, path, port or trailing dot. nil when it is not
+    /// a host name (an IP, a range, a wildcard, a single label).
+    public static func normalize(_ input: String) -> String? {
+        var s = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let r = s.range(of: "://") { s = String(s[r.upperBound...]) }
+        if let cut = s.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) { s = String(s[..<cut]) }
+        if let at = s.lastIndex(of: "@") { s = String(s[s.index(after: at)...]) }
+        if let colon = s.firstIndex(of: ":") { s = String(s[..<colon]) }
+        while s.hasSuffix(".") { s.removeLast() }
+        guard s.contains("."), DNSName.isValid(s), IPAddr(s) == nil else { return nil }
+        // A name needs a letter in its last label; this drops partial IPs and "a.b.c.d-e.f.g.h" ranges.
+        guard let tld = s.split(separator: ".").last, tld.contains(where: \.isLetter) else { return nil }
+        return s
+    }
+
+    /// A `;`/`,`/newline list of hosts, normalized, invalid ones dropped, without duplicates.
+    public static func parse(_ text: String) -> [String] {
+        unique(splitList(text).compactMap(normalize))
+    }
+
+    /// The hosts the auto-tune probes for a rule: its own test hosts when set, else names taken from
+    /// its targets. Geo categories, IPs, CIDRs and ranges cannot be probed and are skipped;
+    /// `*.x.com` becomes `x.com`; other wildcards are skipped.
+    public static func probeHosts(targetHosts: String, testHosts: String) -> [String] {
+        let own = parse(testHosts)
+        if !own.isEmpty { return Array(own.prefix(perRule)) }
+        var derived: [String] = []
+        for entry in splitList(targetHosts) {
+            var e = entry.lowercased()
+            if e.hasPrefix("geosite:") || e.hasPrefix("geoip:") { continue }
+            if e.hasPrefix("*.") { e = String(e.dropFirst(2)) }
+            if e.contains("*") || e.contains("?") || e.contains("/") { continue }
+            if let host = normalize(e) { derived.append(host) }
+        }
+        return Array(unique(derived).prefix(perRule))
+    }
+
+    public static func probeHosts(for rule: Rule) -> [String] {
+        probeHosts(targetHosts: rule.targetHosts, testHosts: rule.testHosts)
+    }
+
+    /// Re-checks a tune request from the control socket: valid names only, the caps above, and the
+    /// default test hosts when nothing is left. General hosts take the budget first, then rules in order.
+    public static func sanitize(general: [String], rules: [TuneRuleInput]) -> (general: [String], rules: [TuneRuleInput]) {
+        var seen = Set<String>()
+        func admit(_ host: String) -> Bool {
+            if seen.contains(host) { return true }
+            guard seen.count < maxTotal else { return false }
+            seen.insert(host)
+            return true
+        }
+        var cleanGeneral = Array(unique(general.prefix(256).compactMap(normalize)).prefix(maxGeneral))
+        var cleanRules: [TuneRuleInput] = []
+        var ids = Set<UUID>()
+        for rule in rules.prefix(maxRules) where !ids.contains(rule.id) {
+            ids.insert(rule.id)
+            let hosts = Array(unique(rule.hosts.prefix(64).compactMap(normalize)).prefix(perRule))
+            if !hosts.isEmpty { cleanRules.append(TuneRuleInput(id: rule.id, hosts: hosts)) }
+        }
+        if cleanGeneral.isEmpty && cleanRules.isEmpty {
+            cleanGeneral = parse(Profile.defaultDpiTestHosts)
+        }
+        cleanGeneral = cleanGeneral.filter(admit)
+        cleanRules = cleanRules.compactMap { rule in
+            let kept = rule.hosts.filter(admit)
+            return kept.isEmpty ? nil : TuneRuleInput(id: rule.id, hosts: kept)
+        }
+        return (cleanGeneral, cleanRules)
+    }
+
+    private static func unique(_ hosts: [String]) -> [String] {
+        var seen = Set<String>()
+        return hosts.filter { seen.insert($0).inserted }
     }
 }
 

@@ -2,13 +2,13 @@ import Foundation
 import PGCore
 
 /// Downloads the tpws DPI-bypass binary from the zapret project's GitHub releases, verifies it
-/// against the release's `sha256sum.txt`, and hands the extracted binary to the engine to install.
-/// tpws ships as the `mac64` build (x86_64 — runs under Rosetta on Apple Silicon).
+/// against the release's `sha256sum.txt`, and hands the extracted binary to the engine, which
+/// re-checks a staged copy against the same file fetched by itself.
+/// tpws ships as the `mac64` build (x86_64, runs under Rosetta on Apple Silicon).
 enum TpwsDownloader {
     struct Prepared {
         let binaryPath: String
         let version: String
-        let sha256: String
     }
 
     static func prepare() async throws -> Prepared {
@@ -21,6 +21,7 @@ enum TpwsDownloader {
               let assets = json["assets"] as? [[String: Any]] else {
             throw NetError("unexpected GitHub response")
         }
+        guard CoreReleases.isValidTag(tag) else { throw NetError("unexpected zapret release tag") }
         func url(_ match: (String) -> Bool) -> URL? {
             assets.first { ($0["name"] as? String).map(match) ?? false }
                 .flatMap { $0["browser_download_url"] as? String }.flatMap(URL.init(string:))
@@ -44,13 +45,11 @@ enum TpwsDownloader {
         _ = try run("/usr/bin/tar", ["-xzf", tarPath.path, "-C", dir.path])
 
         // sha256sum.txt lines: "<hex>  zapret-vXX/binaries/mac64/tpws"
-        let sums = String(decoding: sumData, as: UTF8.self)
-        guard let line = sums.split(whereSeparator: \.isNewline).first(where: { $0.hasSuffix("/binaries/mac64/tpws") }),
-              let expected = line.split(separator: " ").first.map(String.init),
-              let relPath = line.split(separator: " ").last.map(String.init) else {
+        guard let entry = CoreReleases.tpwsEntry(inSumFile: String(decoding: sumData, as: UTF8.self)) else {
             throw NetError("tpws checksum not found in the release")
         }
-        let binary = dir.appendingPathComponent(relPath)
+        let expected = entry.sha256
+        let binary = dir.appendingPathComponent(entry.path)
         guard FileManager.default.fileExists(atPath: binary.path) else {
             throw NetError("tpws binary missing from the archive")
         }
@@ -58,7 +57,7 @@ enum TpwsDownloader {
         guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
             throw NetError("downloaded tpws is corrupt (checksum mismatch)")
         }
-        return Prepared(binaryPath: binary.path, version: tag, sha256: expected)
+        return Prepared(binaryPath: binary.path, version: tag)
     }
 
     private static func sha256(of file: URL) throws -> String {

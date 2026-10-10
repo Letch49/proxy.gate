@@ -7,14 +7,19 @@ import PGCore
 final class ControlServer: @unchecked Sendable {
     private let path: String
     private let allowedUIDs: Set<uid_t>
+    /// nil means no cdhash was pinned (manual dev run): uid-only auth.
+    private let identity: ClientIdentity?
+    /// Accept-loop only. A stale app retries every second; one warning a minute is enough.
+    private var lastRejectLog = Date.distantPast
     private let engine: Engine
     private let lock = NSLock()
     private var current: LineChannel?
     private let sendQueue = DispatchQueue(label: "proxygate.control.send")
 
-    init(path: String, allowedUIDs: Set<uid_t>, engine: Engine) {
+    init(path: String, allowedUIDs: Set<uid_t>, identity: ClientIdentity?, engine: Engine) {
         self.path = path
         self.allowedUIDs = allowedUIDs
+        self.identity = identity
         self.engine = engine
         engine.emit = { [weak self] message in self?.send(message) }
     }
@@ -34,6 +39,16 @@ final class ControlServer: @unchecked Sendable {
             var uid: uid_t = 0
             var gid: gid_t = 0
             guard getpeereid(cfd, &uid, &gid) == 0, uid == 0 || allowedUIDs.contains(uid) else {
+                Darwin.close(cfd)
+                continue
+            }
+            // Root can do anything anyway; any other uid must also be the pinned app build, so another
+            // process of the same user can neither drive the engine nor kick the app off the socket.
+            if uid != 0, let identity, !identity.accepts(fd: cfd) {
+                if Date().timeIntervalSince(lastRejectLog) > 60 {
+                    lastRejectLog = Date()
+                    engine.log(.warning, "Rejected a control client (uid \(uid)): code signature does not match the app")
+                }
                 Darwin.close(cfd)
                 continue
             }
@@ -71,8 +86,8 @@ final class ControlServer: @unchecked Sendable {
             case .stop:
                 engine.stop()
                 send(.status(engine.status))
-            case .installXray(let zipPath, let version, let sha256):
-                engine.installXray(zipPath: zipPath, version: version, sha256: sha256)
+            case .installXray(let zipPath, let version):
+                engine.installXray(zipPath: zipPath, version: version)
                 send(.status(engine.status))
             case .xrayConfig(let json):
                 engine.applyXray(config: json)
@@ -81,22 +96,22 @@ final class ControlServer: @unchecked Sendable {
                 engine.setActiveBridge(bridge)
             case .pingServers(let subscription, let targets):
                 engine.pingServers(subscription: subscription, targets: targets)
-            case .installTpws(let path, let version, let sha256):
-                engine.installTpws(path: path, version: version, sha256: sha256)
+            case .installTpws(let path, let version):
+                engine.installTpws(path: path, version: version)
                 send(.status(engine.status))
             case .tpwsStrategy(let strategy):
                 engine.applyTpws(strategy: strategy)
                 send(.status(engine.status))
-            case .installByedpi(let path, let version, let sha256):
-                engine.installByedpi(path: path, version: version, sha256: sha256)
+            case .installByedpi(let tarballPath, let version):
+                engine.installByedpi(tarballPath: tarballPath, version: version)
                 send(.status(engine.status))
             case .byedpiStrategy(let strategy):
                 engine.applyByedpi(strategy: strategy)
                 send(.status(engine.status))
             case .bypassDirect(let on):
                 engine.setBypassDirect(on)
-            case .tuneBypass(let hosts):
-                engine.tuneBypass(hosts: hosts)
+            case .tuneBypass(let hosts, let rules):
+                engine.tuneBypass(hosts: hosts, rules: rules)
             case .cancelTune:
                 engine.cancelTune()
             case .checkDNS(let host):

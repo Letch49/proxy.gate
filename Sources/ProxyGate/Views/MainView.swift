@@ -190,7 +190,7 @@ struct Sidebar: View {
         case .vpn where model.vpnConnected:
             activeDot(Theme.on)
         case .dpi where model.bypassEnabled:
-            activeDot(model.tpwsRunning ? Theme.on : Theme.warnFg)
+            activeDot(model.anyDPICoreRunning ? Theme.on : Theme.warnFg)
         case .anyconnect where model.anyConnectUp:
             activeDot(Theme.on)
         case .mcp where model.mcpEnabled:
@@ -288,7 +288,9 @@ struct HelperBanner: View {
         if !model.helperInstalled || model.helperOutdated {
             HStack(spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warnFg)
-                if model.helperOutdated {
+                if model.helperPinStale && (model.engineStatus.map { $0.version == PGConstants.version } ?? true) {
+                    Text("The helper needs an update for this app build.")
+                } else if model.helperOutdated {
                     Text("The helper (\(model.engineStatus?.version ?? "?")) is older than the app (\(PGConstants.version)).")
                 } else {
                     Text("ProxyGate needs a privileged helper to redirect traffic (asks for the administrator password once).")

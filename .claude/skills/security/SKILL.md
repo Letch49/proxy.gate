@@ -10,8 +10,8 @@ The engine runs as root. A fault here is a root exploit, so hold this line.
 ## Trust boundary
 
 - Everything from the control socket is untrusted. The peer could be any local process.
-- Today the socket authenticates the peer by uid only (`getpeereid`). Treat that as weak: validate
-  every field before acting, do not rely on the caller being honest.
+- The socket checks the peer's uid and, in an installed helper, the app's pinned cdhash (audit
+  token). Still validate every field before acting; a manual dev run checks the uid only.
 - Validate input, then act. Never pass socket data straight into a shell, a path, or a plist.
 
 ## Processes and arguments
@@ -54,7 +54,6 @@ The engine runs as root. A fault here is a root exploit, so hold this line.
 
 These are known and not yet fixed. Do not regress them, and prefer fixing over working around:
 
-- Socket auth by uid only. Stronger: verify the client code signature or Team ID via audit token.
 - Binary hashes come over TLS with no pinning under corporate MITM.
 - A raw Xray config string can open a non loopback inbound. Force inbound to 127.0.0.1 server side.
 - The helper install script lands in a user writable temp dir (TOCTOU). Prefer SMAppService.
@@ -64,7 +63,14 @@ These are known and not yet fixed. Do not regress them, and prefer fixing over w
 A security pass fixed these; keep them in place:
 
 - LaunchDaemon plists are built via `PropertyListSerialization`, never string interpolation.
+- Control socket auth: besides the uid, the peer must be the app build whose cdhash the helper pins
+  (`--client-cdhash`, checked via the `LOCAL_PEERTOKEN` audit token and `SecCodeCheckValidity`).
+  Uid-only fallback is only for manual dev runs without a pin.
 - tpws flags and the AnyConnect host/user are allowlisted before they reach a command line.
+- Core installs take no hash from the client: the engine copies the named file with `O_NOFOLLOW`
+  (regular file, size-capped) into a root-only staging dir, hashes that copy, and checks it against
+  a hash it gets itself (ByeDPI pinned in `CoreReleases`; Xray `.dgst` and zapret `sha256sum.txt`
+  fetched from a URL built from a validated tag). Unzip/tar/move run only on the staged copy.
 - Every external process goes through `Shell.run`, which closes pipe descriptors (no fd leak).
 - Rule, network and port parsing guards `first`/empty/bounds, so junk input cannot crash the engine.
 - Secret-bearing files and logs are mode 0600.

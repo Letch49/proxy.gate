@@ -82,6 +82,9 @@ VPN core is installed. The `name@attribute` geosite form is not supported, use t
 targetPorts: a port or a `lo-hi` range, e.g. `443; 8000-9000`. applications: process names, `.app`
 names, bundle ids or paths, with `*`/`?`.
 
+For the dpi action a rule also has `dpiEngine` (`tpws`, `byedpi`, or empty for the primary core) and
+`testHosts` (names the DPI auto-tune probes; empty means derived from the plain targetHosts).
+
 The MCP server exposes this same grammar to agents (see `MCP/MCPModel.swift`: the `initialize`
 instructions and the add_rule/update_rule schemas). Keep those three in sync when the grammar
 changes.

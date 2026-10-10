@@ -329,7 +329,11 @@ final class AppModel {
 
     var isRunning: Bool { engineStatus?.running ?? false }
 
+    /// The installed helper pins another app build's cdhash, so it refuses this app.
+    var helperPinStale = HelperInstaller.needsReinstall
+
     var helperOutdated: Bool {
+        if helperPinStale { return true }
         guard let version = engineStatus?.version else { return false }
         return version != PGConstants.version
     }
@@ -422,13 +426,14 @@ final class AppModel {
                     DispatchQueue.main.async { self.xrayMessage = "\(String(localized: "Downloading")) \(percent)%" }
                 }
                 await MainActor.run {
-                    self.client.send(.installXray(zipPath: ready.zipPath, version: ready.version, sha256: ready.sha256))
+                    self.client.send(.installXray(zipPath: ready.zipPath, version: ready.version))
                     self.xrayMessage = String(localized: "Installing \(ready.version)…")
                     self.addLog("VPN core \(ready.version) downloaded, installing", .notice)
                     // The engine replies with a status once installed; fail loudly if it never does.
+                    // Longer than the engine's own checksum fetch timeout (45 s) plus staging and unzip.
                     self.xrayInstallToken += 1
                     let token = self.xrayInstallToken
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 75) { [weak self] in
                         guard let self, self.xrayBusy, self.xrayInstallToken == token else { return }
                         self.xrayBusy = false
                         self.xrayMessage = nil
@@ -466,24 +471,107 @@ final class AppModel {
     var byedpiMessage: String?
 
     var bypassEnabled: Bool { profile.bypassEnabled }
-    var bypassStrategyIndex: Int { profile.bypassStrategyIndex }
 
-    /// The DPI core the active profile uses, its strategy list, and whether it is installed.
-    var dpiEngine: DPIEngine { profile.dpiEngine }
-    var activeStrategies: [DPIStrategy] { profile.dpiEngine.strategies() }
-    var dpiCoreInstalled: Bool { profile.dpiEngine == .byedpi ? byedpiVersion != nil : tpwsVersion != nil }
-    var dpiCoreRunning: Bool { profile.dpiEngine == .byedpi ? byedpiRunning : tpwsRunning }
-    var dpiCoreError: String? { profile.dpiEngine == .byedpi ? byedpiError : tpwsError }
+    // Per-core state. Both cores run at once while bypass is on, each with its own strategy.
 
-    private func strategyFlags(_ index: Int) -> [String] {
-        let all = activeStrategies
-        return all.indices.contains(index) ? all[index].flags : (all.first?.flags ?? [])
+    var installedDPIEngines: [DPIEngine] { DPIEngine.allCases.filter { coreVersion($0) != nil } }
+    var anyDPICoreInstalled: Bool { !installedDPIEngines.isEmpty }
+    var anyDPICoreRunning: Bool { DPIEngine.allCases.contains { coreRunning($0) } }
+
+    func coreVersion(_ e: DPIEngine) -> String? { e == .byedpi ? byedpiVersion : tpwsVersion }
+    func coreRunning(_ e: DPIEngine) -> Bool { e == .byedpi ? byedpiRunning : tpwsRunning }
+    func coreError(_ e: DPIEngine) -> String? { e == .byedpi ? byedpiError : tpwsError }
+    func coreBusy(_ e: DPIEngine) -> Bool { e == .byedpi ? byedpiBusy : tpwsBusy }
+    func coreMessage(_ e: DPIEngine) -> String? { e == .byedpi ? byedpiMessage : tpwsMessage }
+    func installCore(_ e: DPIEngine) {
+        if e == .byedpi { installByedpi() } else { installTpws() }
     }
 
-    /// Sends run/stop to the active engine's core (tpws or ByeDPI).
-    func sendDpiStrategy(_ flags: [String]?) {
-        if profile.dpiEngine == .byedpi { client.send(.byedpiStrategy(flags)) }
-        else { client.send(.tpwsStrategy(flags)) }
+    func strategyIndex(for e: DPIEngine) -> Int { profile.strategyIndex(for: e) }
+
+    func selectStrategy(_ index: Int, for e: DPIEngine) {
+        var p = profile
+        p.setStrategyIndex(index, for: e)
+        profile = p
+        if bypassEnabled, coreVersion(e) != nil { client.send(strategyCommand(e, p.strategyFlags(for: e))) }
+    }
+
+    /// The core used for "all direct traffic" and for DPI rules that do not name one.
+    var primaryDPIEngine: DPIEngine { profile.dpiEngine }
+
+    func setPrimaryDPIEngine(_ e: DPIEngine) {
+        guard e != profile.dpiEngine else { return }
+        profile.dpiEngine = e
+        client.send(.config(profile))
+        addLog("Primary DPI core: \(e.title)", .notice)
+    }
+
+    /// Plain direct traffic also goes through the primary core while bypass is on.
+    var bypassAllDirect: Bool { profile.bypassAllDirect }
+
+    func setBypassAllDirect(_ on: Bool) {
+        guard on != profile.bypassAllDirect else { return }
+        profile.bypassAllDirect = on
+        client.send(.config(profile))
+    }
+
+    private func strategyCommand(_ e: DPIEngine, _ flags: [String]?) -> ClientCommand {
+        e == .byedpi ? .byedpiStrategy(flags) : .tpwsStrategy(flags)
+    }
+
+    /// Runs every installed core with its own strategy, or stops them all when bypass is off.
+    private func pushDPICores() {
+        for e in DPIEngine.allCases {
+            if profile.bypassEnabled {
+                if coreVersion(e) != nil { client.send(strategyCommand(e, profile.strategyFlags(for: e))) }
+            } else {
+                client.send(strategyCommand(e, nil))
+            }
+        }
+    }
+
+    // DPI rules: `.directDPI` rules are the one list of what gets bypassed.
+
+    var dpiRules: [Rule] { profile.rules.filter { $0.action == .directDPI } }
+
+    func setRuleEnabled(_ id: UUID, _ on: Bool) {
+        var p = profile
+        guard let i = p.rules.firstIndex(where: { $0.id == id }),
+              !p.rules[i].isDefault, !p.rules[i].locked, p.rules[i].enabled != on else { return }
+        p.rules[i].enabled = on
+        profile = p
+    }
+
+    func ruleTuneResult(_ id: UUID) -> RuleTuneResult? {
+        tuneReport?.rules.first { $0.ruleID == id }
+    }
+
+    /// Opens the rule editor with a new "Direct + DPI" rule.
+    func newDPIRule() {
+        ruleDraft = Rule(name: String(localized: "New rule"), action: .directDPI)
+        section = .rules
+    }
+
+    var hasYouTubeRule: Bool { profile.hasYouTubeRule }
+
+    /// Adds the YouTube preset on request, disabled like the seeded one: the user turns it on.
+    func addYouTubeRule() { addPreset(hasYouTubeRule, Profile.youTubePreset(enabled: false)) }
+
+    // Test hosts: probed by the auto-tune besides the rules' own hosts.
+
+    var dpiTestHostList: [String] { TuneHosts.parse(profile.dpiTestHosts) }
+
+    func addDpiTestHost(_ h: String) {
+        guard let host = TuneHosts.normalize(h) else { return }
+        var list = dpiTestHostList
+        guard !list.contains(host) else { return }
+        list.append(host)
+        profile.dpiTestHosts = list.joined(separator: "; ")
+    }
+
+    func removeDpiTestHost(_ h: String) {
+        let host = TuneHosts.normalize(h) ?? h
+        profile.dpiTestHosts = dpiTestHostList.filter { $0 != host }.joined(separator: "; ")
     }
 
     func installTpws() {
@@ -494,7 +582,7 @@ final class AppModel {
             do {
                 let ready = try await TpwsDownloader.prepare()
                 await MainActor.run {
-                    self.client.send(.installTpws(path: ready.binaryPath, version: ready.version, sha256: ready.sha256))
+                    self.client.send(.installTpws(path: ready.binaryPath, version: ready.version))
                     self.tpwsMessage = String(localized: "Installing \(ready.version)…")
                     self.addLog("DPI-bypass core (tpws) \(ready.version) downloaded, installing", .notice)
                 }
@@ -516,7 +604,7 @@ final class AppModel {
             do {
                 let ready = try await ByeDpiDownloader.prepare()
                 await MainActor.run {
-                    self.client.send(.installByedpi(path: ready.binaryPath, version: ready.version, sha256: ready.sha256))
+                    self.client.send(.installByedpi(tarballPath: ready.tarballPath, version: ready.version))
                     self.byedpiMessage = String(localized: "Installing \(ready.version)…")
                     self.addLog("ByeDPI core \(ready.version) downloaded, installing", .notice)
                 }
@@ -530,43 +618,25 @@ final class AppModel {
         }
     }
 
-    /// Switches the active DPI engine: stops the old core, resets the strategy, and (if bypass is on)
-    /// starts the new one. The engine side follows `profile.dpiEngine` pushed with the config.
-    func setDpiEngine(_ engine: DPIEngine) {
-        guard engine != profile.dpiEngine else { return }
-        sendDpiStrategy(nil)                 // stop the core we are leaving
-        profile.dpiEngine = engine
-        profile.bypassStrategyIndex = 0
-        didAutoTune = false
-        if profile.bypassEnabled, dpiCoreInstalled {
-            sendDpiStrategy(strategyFlags(0))
-        }
-        addLog("DPI engine: \(engine.title)", .notice)
-    }
-
-    /// Turns DPI bypass on/off: runs the active core with the chosen strategy and tells the engine to
-    /// route direct connections through it.
+    /// Turns DPI bypass on/off: runs every installed core with its strategy, and tells the engine
+    /// whether bypass is on (for "all direct traffic").
     func setBypass(_ on: Bool) {
-        if on, !dpiCoreInstalled {
+        if on, !anyDPICoreInstalled {
             alertMessage = String(localized: "Install the DPI-bypass core first (DPI tab).")
             return
         }
         profile.bypassEnabled = on
+        client.send(.config(profile))
         if on {
-            sendDpiStrategy(strategyFlags(profile.bypassStrategyIndex))
+            pushDPICores()
             client.send(.bypassDirect(true))
             addLog("DPI bypass on", .notice)
             autoTuneIfNeeded()
         } else {
             client.send(.bypassDirect(false))
-            sendDpiStrategy(nil)
+            pushDPICores()
             addLog("DPI bypass off", .notice)
         }
-    }
-
-    func selectStrategy(_ index: Int) {
-        profile.bypassStrategyIndex = index
-        if profile.bypassEnabled { sendDpiStrategy(strategyFlags(index)) }
     }
 
     var tuning = false
@@ -575,32 +645,31 @@ final class AppModel {
     var tuneReport: TuneReport?
     @ObservationIgnored private var didAutoTune = false
 
-    /// Test hosts for the DPI auto-tune, parsed from the editable list.
-    var dpiTestHosts: [String] {
-        profile.dpiTestHosts.components(separatedBy: CharacterSet(charactersIn: ";,\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-    }
-
     /// Runs auto-tune once per session when bypass is on (on enable and on launch/reconnect).
     func autoTuneIfNeeded() {
-        guard !didAutoTune, profile.bypassEnabled, engineConnected, dpiCoreInstalled else { return }
+        guard !didAutoTune, profile.bypassEnabled, engineConnected, anyDPICoreInstalled else { return }
         didAutoTune = true
         tuneBypass()
     }
 
-    /// Asks the engine to diagnose the test hosts and try the installed cores on the blocked ones.
-    /// The probes go straight out (never through VPN or a proxy) and dial the resolved IP with the
-    /// real name for SNI, so the result reflects this DNS + core + strategy, not the current routing.
+    /// Asks the engine to diagnose the test hosts and every DPI rule's hosts, and to try all installed
+    /// cores on the blocked ones. The probes go straight out (never through VPN or a proxy) and dial
+    /// the resolved IP with the real name for SNI, so the result reflects this DNS + core + strategy,
+    /// not the current routing.
     func tuneBypass() {
-        guard engineConnected, tpwsVersion != nil || byedpiVersion != nil else {
+        guard engineConnected, anyDPICoreInstalled else {
             alertMessage = String(localized: "Install the DPI-bypass core first (DPI tab).")
             return
         }
         tuning = true
         tuneProgress = nil
+        let rules = dpiRules.compactMap { rule -> TuneRuleInput? in
+            let hosts = TuneHosts.probeHosts(for: rule)
+            return hosts.isEmpty ? nil : TuneRuleInput(id: rule.id, hosts: hosts)
+        }
         // The engine reads the DNS provider from the profile; push edits made a moment ago first.
         client.send(.config(profile))
-        client.send(.tuneBypass(hosts: dpiTestHosts))
+        client.send(.tuneBypass(hosts: dpiTestHostList, rules: rules))
     }
 
     func cancelTune() {
@@ -756,24 +825,31 @@ final class AppModel {
         }
     }
 
+    /// Applies a finished auto-tune: the strategy chosen for each core, and for each DPI rule the
+    /// core that opened it. Rules are never turned on or off here.
     private func bypassTuned(_ report: TuneReport) {
         tuning = false
         tuneProgress = nil
         tuneReport = report
-        // Learn the hosts that really needed a bypass (not those that open directly).
-        let learned = report.hosts.filter { $0.ok && !$0.directOK }.map(\.host)
-        if !learned.isEmpty {
-            var p = profile
-            for host in learned where !p.bypassHosts.contains(host) { p.bypassHosts.append(host) }
-            profile = p
+        guard !report.cancelled else { return }
+        var p = profile
+        var picked: [String] = []
+        for e in DPIEngine.allCases {
+            guard let index = report.chosenStrategy(for: e), coreVersion(e) != nil else { continue }
+            p.setStrategyIndex(index, for: e)
+            picked.append("\(e.title) \"\(e.strategyLabel(index))\"")
         }
-        guard report.verdict == .found, let engine = report.engine else { return }
-        let installed = engine == .byedpi ? byedpiVersion != nil : tpwsVersion != nil
-        guard installed else { return }
-        if engine != profile.dpiEngine { setDpiEngine(engine) }
-        selectStrategy(report.strategyIndex)
-        let label = activeStrategies.indices.contains(report.strategyIndex) ? activeStrategies[report.strategyIndex].label : ""
-        addLog("DPI auto-tune picked \(engine.title) \"\(label)\"", .notice)
+        for result in report.rules {
+            guard let engine = result.engine, coreVersion(engine) != nil,
+                  let i = p.rules.firstIndex(where: { $0.id == result.ruleID }),
+                  p.rules[i].action == .directDPI else { continue }
+            if p.rules[i].dpiEngine == nil || result.ok { p.rules[i].dpiEngine = engine }
+        }
+        guard p != profile else { return }
+        profile = p
+        client.send(.config(profile))
+        if profile.bypassEnabled { pushDPICores() }
+        if !picked.isEmpty { addLog("DPI auto-tune picked \(picked.joined(separator: ", "))", .notice) }
     }
 
     // MARK: - Updates
@@ -1099,6 +1175,11 @@ final class AppModel {
     /// Removes the old leaked "VPN (all traffic)" rule and the managed 127.0.0.1 proxy from a
     /// profile saved by an earlier build, and makes the default rule follow the active bridge.
     private func migrateLegacyVPN() {
+        // Every profile gets the (disabled) YouTube DPI rule once.
+        var offered = false
+        for i in profiles.indices where profiles[i].offerYouTubePreset() { offered = true }
+        if offered { persistAndPush() }
+
         var p = profile
         var changed = false
         if p.rules.contains(where: { $0.name == "VPN (all traffic)" }) {
@@ -1236,6 +1317,7 @@ final class AppModel {
             await MainActor.run {
                 self.helperBusy = false
                 self.helperInstalled = HelperInstaller.isInstalled
+                self.helperPinStale = HelperInstaller.needsReinstall
                 switch result {
                 case .success:
                     self.addLog("Helper installed", .notice)
@@ -1267,6 +1349,7 @@ final class AppModel {
     private func engineConnectionChanged(_ connected: Bool) {
         engineConnected = connected
         helperInstalled = HelperInstaller.isInstalled
+        helperPinStale = HelperInstaller.needsReinstall
         if connected {
             client.send(.hello(version: PGConstants.version))
             client.send(.config(profile))
@@ -1274,7 +1357,7 @@ final class AppModel {
             client.send(.xrayConfig(profile.activeVPNConfig()))
             client.send(.activeBridge(activeBridge))
             if profile.bypassEnabled {
-                sendDpiStrategy(strategyFlags(profile.bypassStrategyIndex))
+                pushDPICores()
                 client.send(.bypassDirect(true))
             }
             if wantRunning {
@@ -1315,6 +1398,8 @@ final class AppModel {
             case .status(let status):
                 let wasRunning = isRunning
                 let prevXray = engineStatus?.xrayVersion
+                let prevTpws = engineStatus?.tpwsVersion
+                let prevByedpi = engineStatus?.byedpiVersion
                 let prevAC = engineStatus?.anyConnect
                 engineStatus = status
                 if prevAC?.phase != status.anyConnect.phase || prevAC?.routes != status.anyConnect.routes {
@@ -1331,6 +1416,11 @@ final class AppModel {
                 }
                 if byedpiBusy, status.byedpiVersion != nil {
                     byedpiBusy = false; byedpiMessage = nil
+                }
+                // A core installed while bypass is on starts with its strategy right away.
+                if profile.bypassEnabled {
+                    if prevTpws == nil, status.tpwsVersion != nil { client.send(strategyCommand(.tpws, profile.strategyFlags(for: .tpws))) }
+                    if prevByedpi == nil, status.byedpiVersion != nil { client.send(strategyCommand(.byedpi, profile.strategyFlags(for: .byedpi))) }
                 }
                 if status.xrayVersion != nil || status.tpwsVersion != nil { checkForUpdates() }
                 if status.tpwsVersion != nil || status.byedpiVersion != nil { autoTuneIfNeeded() }
@@ -1508,6 +1598,7 @@ final class AppModel {
         }
         if !engineConnected {
             helperInstalled = HelperInstaller.isInstalled
+            helperPinStale = HelperInstaller.needsReinstall
         }
         autoPing()
     }

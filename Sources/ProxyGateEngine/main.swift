@@ -12,11 +12,12 @@ if getrlimit(RLIMIT_NOFILE, &limit) == 0 {
     setrlimit(RLIMIT_NOFILE, &limit)
 }
 
-// The engine log records connection targets (hostnames) — keep it readable by root only, not 0644.
+// The engine log records connection targets (hostnames): keep it readable by root only, not 0644.
 chmod(PGConstants.helperLogPath, 0o600)
 
 var socketPath = PGConstants.socketPath
 var allowedUIDs = Set<uid_t>()
+var clientCDHashes = Set<String>()
 if let sudoUID = ProcessInfo.processInfo.environment["SUDO_UID"].flatMap({ uid_t($0) }) {
     allowedUIDs.insert(sudoUID)
 }
@@ -30,6 +31,13 @@ while let arg = args.next() {
         if let uid = args.next().flatMap({ uid_t($0) }) {
             allowedUIDs.insert(uid)
         }
+    case CDHash.argument:
+        // A bad pin must not silently fall back to uid-only auth.
+        guard let hash = args.next().flatMap(CDHash.normalize) else {
+            FileHandle.standardError.write(Data("invalid \(CDHash.argument) value, expected 40 hex digits\n".utf8))
+            exit(2)
+        }
+        clientCDHashes.insert(hash)
     case "--version":
         print(PGConstants.version)
         exit(0)
@@ -75,7 +83,7 @@ while let arg = args.next() {
         print("DNS stub on 127.0.0.1:\(PGConstants.dnsStubPort) for \(domains)")
         dispatchMain()
     default:
-        FileHandle.standardError.write(Data("usage: proxygate-engine [--socket PATH] [--allow-uid UID]... [--version] [--print-rules] [--dns-test HOST]\n".utf8))
+        FileHandle.standardError.write(Data("usage: proxygate-engine [--socket PATH] [--allow-uid UID]... [--client-cdhash HEX]... [--version] [--print-rules] [--dns-test HOST]\n".utf8))
         exit(2)
     }
 }
@@ -89,8 +97,18 @@ guard getuid() == 0 else {
 PF.flushAnchor()
 SystemDNS.clear()
 
+let clientIdentity = ClientIdentity(cdhashes: clientCDHashes)
+if clientIdentity == nil {
+    if clientCDHashes.isEmpty {
+        FileHandle.standardError.write(Data("warning: no \(CDHash.argument), control clients are checked by uid only\n".utf8))
+    } else {
+        FileHandle.standardError.write(Data("cannot build the client code requirement\n".utf8))
+        exit(1)
+    }
+}
+
 let engine = Engine()
-let server = ControlServer(path: socketPath, allowedUIDs: allowedUIDs, engine: engine)
+let server = ControlServer(path: socketPath, allowedUIDs: allowedUIDs, identity: clientIdentity, engine: engine)
 
 var signalSources: [DispatchSourceSignal] = []
 for sig in [SIGTERM, SIGINT, SIGHUP] {

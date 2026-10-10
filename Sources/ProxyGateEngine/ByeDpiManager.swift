@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 import PGCore
@@ -23,24 +22,31 @@ final class ByeDpiManager: @unchecked Sendable {
 
     var error: String? { lock.withLock { lastError } }
 
-    /// Verifies the ciadpi binary the app downloaded, then installs it into the support dir.
-    func install(from path: String, version: String, sha256 expected: String) throws {
-        guard let data = FileManager.default.contents(atPath: path) else {
-            throw NetError("downloaded ByeDPI not found at \(path)")
+    /// Installs ciadpi from the release tarball the app downloaded. The client only names the file:
+    /// the engine stages a copy, checks it against the hash pinned in `CoreReleases` for `version`
+    /// and this Mac's architecture, and extracts the one expected member itself.
+    func install(fromTarball path: String, version: String) throws {
+        guard let build = CoreReleases.byedpiBuild(version: version, arm64: CoreReleases.isAppleSilicon) else {
+            throw NetError("no pinned ByeDPI build for this version")
         }
-        let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
-            throw NetError("ByeDPI checksum mismatch")
+        // The member is a constant from the table, but keep it a plain file name regardless.
+        guard !build.member.isEmpty, !build.member.contains("/"), !build.member.hasPrefix("-"), build.member != ".." else {
+            throw NetError("bad ByeDPI archive member")
         }
-        try FileManager.default.createDirectory(atPath: PGConstants.supportDir, withIntermediateDirectories: true)
-        let tmp = PGConstants.byedpiPath + ".new"
-        try? FileManager.default.removeItem(atPath: tmp)
-        try data.write(to: URL(fileURLWithPath: tmp))
-        _ = ServiceUser.shell("/usr/bin/xattr", ["-d", "com.apple.quarantine", tmp])
-        _ = ServiceUser.shell("/bin/chmod", ["755", tmp])
-        _ = ServiceUser.shell("/usr/sbin/chown", ["root:wheel", tmp])
-        _ = try? FileManager.default.removeItem(atPath: PGConstants.byedpiPath)
-        try FileManager.default.moveItem(atPath: tmp, toPath: PGConstants.byedpiPath)
+        let dir = try CoreInstall.makeStagingDir()
+        defer { CoreInstall.remove(dir) }
+        let staged = try CoreInstall.stage(path, in: dir, name: "byedpi.tar.gz")
+        guard staged.sha256 == build.tarballSHA256.lowercased() else {
+            throw NetError("ByeDPI archive does not match the pinned checksum")
+        }
+        let out = dir + "/out"
+        try CoreInstall.makeDir(out)
+        let tar = Shell.run("/usr/bin/tar", ["-x", "-z", "-f", staged.path, "-C", out, "--", build.member])
+        guard tar.status == 0 else {
+            throw NetError("could not extract ByeDPI: \(tar.output.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        // place() accepts only a regular file, so a link entry in the archive is refused.
+        try CoreInstall.place(out + "/" + build.member, at: PGConstants.byedpiPath, mode: 0o755)
         try version.write(toFile: PGConstants.byedpiVersionPath, atomically: true, encoding: .utf8)
     }
 
