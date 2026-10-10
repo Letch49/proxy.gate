@@ -551,3 +551,7 @@
 "Certificate error" = "Ошибка сертификата";
 "Core did not start" = "Ядро не запустилось";
 "No strategy helped" = "Стратегии не помогли";
+"Dependencies" = "Зависимости";
+"Cores download from their GitHub releases, and the helper checks each file's SHA-256 before installing it. openconnect comes from Homebrew, which checks its own packages." = "Ядра скачиваются из релизов на GitHub, хелпер сверяет SHA-256 каждого файла перед установкой. openconnect ставится из Homebrew, он сам проверяет свои пакеты.";
+
+"Core" = "Ядро";

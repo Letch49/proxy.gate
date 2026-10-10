@@ -53,89 +53,48 @@ struct SettingsPage: View {
                     }
                 }
                 Section {
-                    LabeledContent("Core status") {
-                        if let version = model.xrayVersion {
-                            Text(model.xrayRunning ? "Running, \(version)" : "Installed, \(version)")
-                                .foregroundStyle(model.xrayRunning ? Theme.onFg : Theme.text2)
-                        } else {
-                            Text("Not installed").foregroundStyle(Theme.offFg)
-                        }
-                    }
-                    if let error = model.xrayError {
-                        Text(error).font(.caption).foregroundStyle(Theme.warnFg).textSelection(.enabled)
-                    }
-                    HStack {
-                        Button(model.xrayVersion == nil ? "Install Core" : "Update Core") { model.installXray() }
-                            .disabled(model.xrayBusy || !model.engineConnected)
-                        if model.xrayBusy {
-                            ProgressView().controlSize(.small)
-                            if let msg = model.xrayMessage { Text(msg).font(.caption).foregroundStyle(Theme.text3) }
-                        }
+                    DependencyRow(
+                        name: "Xray", role: "VPN", source: "github.com/XTLS/Xray-core",
+                        url: URL(string: "https://github.com/XTLS/Xray-core/releases")!,
+                        installed: model.xrayVersion != nil, version: model.xrayVersion, running: model.xrayRunning,
+                        update: model.xrayUpdate, error: model.xrayError, busy: model.xrayBusy, message: model.xrayMessage,
+                        actionTitle: model.xrayVersion == nil ? "Install Core" : "Update Core",
+                        actionDisabled: !model.engineConnected, log: PGConstants.xrayLogPath) { model.installXray() }
+                    DependencyRow(
+                        name: "tpws (zapret)", role: "DPI", source: "github.com/bol-van/zapret",
+                        url: URL(string: "https://github.com/bol-van/zapret/releases")!,
+                        installed: model.tpwsVersion != nil, version: model.tpwsVersion, running: model.tpwsRunning,
+                        update: model.tpwsUpdate, error: model.tpwsError, busy: model.tpwsBusy, message: model.tpwsMessage,
+                        actionTitle: model.tpwsVersion == nil ? "Install Core" : "Update Core",
+                        actionDisabled: !model.engineConnected, log: PGConstants.tpwsLogPath) { model.installTpws() }
+                    DependencyRow(
+                        name: "ByeDPI", role: "DPI", source: "github.com/ollesss/byedpi_macos",
+                        url: URL(string: "https://github.com/ollesss/byedpi_macos/releases")!,
+                        installed: model.byedpiVersion != nil, version: model.byedpiVersion, running: model.byedpiRunning,
+                        error: model.byedpiError, busy: model.byedpiBusy, message: model.byedpiMessage,
+                        actionTitle: model.byedpiVersion == nil ? "Install Core" : "Update Core",
+                        actionDisabled: !model.engineConnected, log: PGConstants.byedpiLogPath) { model.installByedpi() }
+                    DependencyRow(
+                        name: "openconnect", role: "AnyConnect", source: "Homebrew",
+                        url: URL(string: "https://formulae.brew.sh/formula/openconnect")!,
+                        installed: model.openConnectInstalled, busy: model.openConnectBusy, message: model.openConnectMessage,
+                        actionTitle: model.openConnectInstalled ? "Reinstall via Homebrew" : "Install via Homebrew") {
+                        model.installOpenConnect()
                     }
                 } header: {
-                    Text("VPN core (Xray)")
+                    Text("Dependencies")
                 } footer: {
-                    Text("The Xray core powers VLESS/REALITY VPN subscriptions. It downloads independently of the app and runs unprivileged, so new anti-blocking methods arrive on release day. Add subscriptions and pick a server on the VPN page. Log: \(PGConstants.xrayLogPath)")
+                    Text("Cores download from their GitHub releases, and the helper checks each file's SHA-256 before installing it. openconnect comes from Homebrew, which checks its own packages.")
                         .font(.caption)
                         .foregroundStyle(Theme.text3)
                 }
                 Section {
-                    LabeledContent("Core status") {
-                        if let version = model.tpwsVersion {
-                            Text(model.tpwsRunning ? "Running, \(version)" : "Installed, \(version)")
-                                .foregroundStyle(model.tpwsRunning ? Theme.onFg : Theme.text2)
-                        } else {
-                            Text("Not installed").foregroundStyle(Theme.offFg)
-                        }
-                    }
-                    if let error = model.tpwsError {
-                        Text(error).font(.caption).foregroundStyle(Theme.warnFg).textSelection(.enabled)
-                    }
-                    HStack {
-                        Button(model.tpwsVersion == nil ? "Install Core" : "Update Core") { model.installTpws() }
-                            .disabled(model.tpwsBusy || !model.engineConnected)
-                        if model.tpwsBusy {
-                            ProgressView().controlSize(.small)
-                            if let msg = model.tpwsMessage { Text(msg).font(.caption).foregroundStyle(Theme.text3) }
-                        }
-                    }
-                    if model.tpwsUpdate != nil {
-                        Text("Update available: \(model.tpwsUpdate ?? "")").font(.caption).foregroundStyle(Theme.warnFg)
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Auto-tune test sites").font(.caption).foregroundStyle(Theme.text3)
-                        TextField("", text: $model.profile.dpiTestHosts, prompt: Text("youtube.com; discord.com"), axis: .vertical)
-                            .lineLimit(1...3).font(Theme.mono)
-                        Text("Known-blocked hosts the DPI auto-tune probes. During the test they always go direct.")
-                            .font(.caption).foregroundStyle(Theme.text3)
-                    }
+                    TextField("", text: $model.profile.dpiTestHosts, prompt: Text("youtube.com; discord.com"), axis: .vertical)
+                        .lineLimit(1...3).font(Theme.mono)
                 } header: {
-                    Text("DPI-bypass core (tpws)")
+                    Text("Auto-tune test sites")
                 } footer: {
-                    Text("The tpws core (zapret) defeats ISP DPI on direct routes. Turn it on and pick a strategy on the DPI page. Log: \(PGConstants.tpwsLogPath)")
-                        .font(.caption)
-                        .foregroundStyle(Theme.text3)
-                }
-                Section {
-                    LabeledContent("openconnect") {
-                        if model.openConnectInstalled {
-                            Text("Installed").foregroundStyle(Theme.onFg)
-                        } else {
-                            Text("Not installed").foregroundStyle(Theme.offFg)
-                        }
-                    }
-                    HStack {
-                        Button(model.openConnectInstalled ? "Reinstall via Homebrew" : "Install via Homebrew") { model.installOpenConnect() }
-                            .disabled(model.openConnectBusy)
-                        if model.openConnectBusy {
-                            ProgressView().controlSize(.small)
-                            if let m = model.openConnectMessage { Text(m).font(.caption).foregroundStyle(Theme.text3) }
-                        }
-                    }
-                } header: {
-                    Text("AnyConnect (openconnect)")
-                } footer: {
-                    Text("Connect to a Cisco AnyConnect VPN on the AnyConnect page. The button runs `brew install openconnect`. Only corporate subnets go through the tunnel; your VPN keeps working in parallel.")
+                    Text("Known-blocked hosts the DPI auto-tune probes. During the test they always go direct.")
                         .font(.caption).foregroundStyle(Theme.text3)
                 }
                 Section("Privileged helper") {
@@ -166,4 +125,65 @@ struct SettingsPage: View {
         }
     }
 
+}
+
+/// One external core in the Dependencies group: where it comes from, its state and one action.
+private struct DependencyRow: View {
+    let name: String
+    let role: String
+    let source: String
+    let url: URL
+    let installed: Bool
+    var version: String?
+    var running = false
+    var update: String?
+    var error: String?
+    let busy: Bool
+    var message: String?
+    let actionTitle: LocalizedStringKey
+    var actionDisabled = false
+    var log: String?
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(verbatim: name).fontWeight(.semibold)
+                        Text(verbatim: role).font(.caption).foregroundStyle(Theme.text3)
+                    }
+                    Link(source, destination: url).font(.caption)
+                }
+                Spacer()
+                if busy { ProgressView().controlSize(.small) }
+                status
+                Button(actionTitle, action: action).disabled(busy || actionDisabled)
+            }
+            if busy, let message {
+                Text(message).font(.caption).foregroundStyle(Theme.text3)
+            }
+            if let update {
+                Text("Update available: \(update)").font(.caption).foregroundStyle(Theme.warnFg)
+            }
+            if let error {
+                Text(error).font(.caption).foregroundStyle(Theme.warnFg).textSelection(.enabled)
+            }
+            if let log {
+                Text("Log: \(log)").font(.caption).foregroundStyle(Theme.text3).textSelection(.enabled)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder private var status: some View {
+        if !installed {
+            StatusPill(text: String(localized: "Not installed"), tone: .warn)
+        } else if let version {
+            StatusPill(text: running ? String(localized: "Running, \(version)") : String(localized: "Installed, \(version)"),
+                       tone: running ? .ok : .neutral)
+        } else {
+            StatusPill(text: String(localized: "Installed"), tone: .neutral)
+        }
+    }
 }

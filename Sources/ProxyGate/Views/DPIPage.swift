@@ -97,33 +97,21 @@ struct DPIPage: View {
     }
 
     private var enginePicker: some View {
-        HStack(spacing: 12) {
-            engineCard(.tpws, note: "Split, disorder, OOB.")
-            engineCard(.byedpi, note: "Split, disorder, OOB, TLS records. Another way to cut the request.")
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader("Core")
+            engineRow(.tpws, note: "Split, disorder, OOB.")
+            engineRow(.byedpi, note: "Split, disorder, OOB, TLS records. Another way to cut the request.")
         }
     }
 
-    private func engineCard(_ engine: DPIEngine, note: LocalizedStringKey) -> some View {
-        let selected = model.dpiEngine == engine
+    private func engineRow(_ engine: DPIEngine, note: LocalizedStringKey) -> some View {
         let installed = engine == .byedpi ? model.byedpiVersion != nil : model.tpwsVersion != nil
-        return Button { model.setDpiEngine(engine) } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                        .foregroundStyle(selected ? Theme.accent : Theme.text3)
-                    Text(engine.title).font(.system(size: 13.5, weight: .semibold))
-                    Spacer()
-                    if installed { StatusPill(text: String(localized: "Installed")) }
-                }
-                Text(note).font(.system(size: 11.5)).foregroundStyle(Theme.text2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-            .card(radius: 12, border: selected ? Theme.accentBorder : Theme.border)
-            .contentShape(Rectangle())
+        return ChoiceRow(title: engine.title, selected: model.dpiEngine == engine) {
+            model.setDpiEngine(engine)
+        } trailing: {
+            Text(note).font(.system(size: 11.5)).foregroundStyle(Theme.text3).lineLimit(1)
+            if installed { StatusPill(text: String(localized: "Installed")) }
         }
-        .buttonStyle(.plain)
     }
 
     private var autohostlistCard: some View {
