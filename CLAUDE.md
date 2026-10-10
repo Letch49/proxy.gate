@@ -115,14 +115,14 @@ Durable project knowledge lives in `.claude/skills`. Load the one that matches t
   interface text.
 - `security` the threat model: trust boundary, allowlists, safe plist building, secrets, supply
   chain, what is already hardened and what is still open.
-- `mcp` the built-in MCP server: transport, auth, tools, threading, and the settings UI.
+- `mcp-proxy-gate` the built-in MCP server: transport, auth, tools, threading, and the settings UI.
 
 By topic:
 
 - How interception works: "How it works" above, then skill `architecture`.
 - Rule target grammar: "Rule targets" above (matcher in `PGCore/Matching.swift`, geo in
   `ProxyGateEngine/GeoDB.swift`).
-- Agent control over rules: skill `mcp`, code in `Sources/ProxyGate/MCP/`.
+- Agent control over rules: skill `mcp-proxy-gate`, code in `Sources/ProxyGate/MCP/`.
 - VPN / DPI / AnyConnect: skill `architecture`, engine managers in `Sources/ProxyGateEngine/`
   (`XrayManager`, `TpwsManager`, `AnyConnectManager`).
 - App state and the engine protocol: `Sources/ProxyGate/AppModel.swift`, `Sources/PGCore/Protocol.swift`.

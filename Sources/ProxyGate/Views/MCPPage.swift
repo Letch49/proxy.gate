@@ -12,8 +12,27 @@ struct MCPPage: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    private var setupCommand: String {
-        "claude mcp add --transport http proxygate \(model.mcpURL) --header \"Authorization: Bearer \(model.mcpToken)\""
+    /// A client-agnostic English prompt: paste it into any MCP client or agent to register the
+    /// server at user scope. Includes the ready Claude Code command plus generic instructions.
+    private var setupPrompt: String {
+        """
+        Add an MCP server to my MCP client at user scope (available in every project, not project-local).
+
+        Server:
+        - name: mcp-proxy-gate
+        - transport: HTTP (Streamable HTTP)
+        - url: \(model.mcpURL)
+        - auth header: Authorization: Bearer \(model.mcpToken)
+
+        If I use Claude Code, run this in a terminal:
+        claude mcp add --transport http --scope user mcp-proxy-gate \(model.mcpURL) --header "Authorization: Bearer \(model.mcpToken)"
+
+        For any other client (Claude Desktop, Cursor, VS Code, Windsurf, ...), register it in that client's \
+        user/global MCP configuration as an HTTP server with the same url and the same Authorization header.
+
+        It is a local server on 127.0.0.1 and the Bearer token is the only credential, so keep it private. \
+        After adding it, confirm the tools load (for example call list_rules).
+        """
     }
 
     private var statusNote: String {
@@ -70,15 +89,19 @@ struct MCPPage: View {
                             }
                         }
                         Divider().overlay(Theme.border)
-                        Button("Copy Claude Code command") { copy(setupCommand) }
-                            .buttonStyle(AccentButtonStyle())
+                        VStack(alignment: .leading, spacing: 6) {
+                            Button("Copy setup prompt") { copy(setupPrompt) }
+                                .buttonStyle(AccentButtonStyle())
+                            Text("Copies an English prompt you can paste into any MCP client or AI agent to add this server at user scope (Claude Code, Claude Desktop, Cursor, and others).")
+                                .font(.caption).foregroundStyle(Theme.text3)
+                        }
                     }
                     .padding(16).card(radius: 12)
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Runs a local server on 127.0.0.1 only, guarded by the token above. An agent can view, add, change, delete and reorder rules, and read the journal and stats. It cannot start redirection or change VPN, DPI or AnyConnect.")
-                    Text("To connect from Claude Code, enable this, then run \"Copy Claude Code command\" and paste it in a terminal. The status turns green once an agent has connected. Regenerate the token to revoke access.")
+                    Text("To connect, enable this, then use \"Copy setup prompt\" and give it to your MCP client or agent. The status turns green once an agent has connected. Regenerate the token to revoke access.")
                 }
                 .font(.caption).foregroundStyle(Theme.text3)
             }

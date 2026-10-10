@@ -1,5 +1,5 @@
 ---
-name: mcp
+name: mcp-proxy-gate
 description: ProxyGate's built-in MCP server. Load when touching MCP/MCPServer.swift, MCP/MCPModel.swift, the tool surface, the rule-target grammar exposed to agents, or the MCP settings UI.
 ---
 
@@ -45,7 +45,7 @@ VPN/DPI/AnyConnect. Default, locked and dynamic rules are protected from edit, d
 
 Its own sidebar page (`AppSection.mcp`, `Views/MCPPage.swift`), placed above the profile widget,
 with a green dot when the server is running. Holds the toggle, status, address, port, token
-(show/copy/regenerate) and a "Copy Claude Code command" button. Connect with
+(show/copy/regenerate) and a "Copy setup prompt" button (client-agnostic, user scope). Connect with
 `claude mcp add --transport http ... --header "Authorization: Bearer <token>"`.
 
 ## Keeping the grammar in sync

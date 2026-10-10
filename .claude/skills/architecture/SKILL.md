@@ -36,7 +36,7 @@ the engine drops the pf rules at once, so traffic is never left redirected.
 
 Rules are ordered, first enabled match wins, Default is last. Matching is in `PGCore/Matching.swift`
 and is action-independent, so the target grammar is the same for every action. See the "Rule
-targets" section in CLAUDE.md for the grammar, and [mcp] for how agents use it.
+targets" section in CLAUDE.md for the grammar, and [mcp-proxy-gate] for how agents use it.
 
 Actions: direct, block, global, vpn, dpi (direct through the DPI core), proxy(id), chain(id).
 A "bridge" is the egress a `.global` rule resolves to right now: direct, vpn or a proxy. The app
