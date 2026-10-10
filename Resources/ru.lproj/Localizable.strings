@@ -376,6 +376,10 @@
 "New token" = "Новый токен";
 "Copy Claude Code command" = "Скопировать команду для Claude Code";
 "AI control (MCP)" = "Управление через ИИ (MCP)";
+"AI (MCP)" = "ИИ (MCP)";
+"A local endpoint so an AI agent can manage rules and read the log and stats." = "Локальная точка доступа, через которую ИИ управляет правилами и читает журнал и статистику.";
+"An agent has connected" = "Агент подключался";
+"To connect from Claude Code, enable this, then run \"Copy Claude Code command\" and paste it in a terminal. The status turns green once an agent has connected. Regenerate the token to revoke access." = "Чтобы подключить Claude Code, включите это, нажмите «Скопировать команду для Claude Code» и вставьте её в терминал. Статус загорится зелёным после первого подключения агента. Смените токен, чтобы отозвать доступ.";
 "Runs a local server on 127.0.0.1 only, guarded by the token above. An agent can view, add, change, delete and reorder rules, and read the journal and stats. It cannot start redirection or change VPN, DPI or AnyConnect." = "Поднимает локальный сервер только на 127.0.0.1, под защитой токена выше. Агент может смотреть, добавлять, менять, удалять и переупорядочивать правила, читать журнал и статистику. Он не может включать перехват и менять VPN, DPI или AnyConnect.";
 "To connect from Claude Code, enable this, then run \"Copy Claude Code command\" and paste it in a terminal. The status shows Active once an agent has connected. Regenerate the token to revoke access." = "Чтобы подключить Claude Code, включите это, нажмите «Скопировать команду для Claude Code» и вставьте её в терминал. Статус станет «Активно» после первого подключения агента. Смените токен, чтобы отозвать доступ.";
 "Could not start the MCP server on port %lld: %@" = "Не удалось запустить MCP-сервер на порту %lld: %@";

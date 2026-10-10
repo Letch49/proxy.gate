@@ -43,8 +43,9 @@ VPN/DPI/AnyConnect. Default, locked and dynamic rules are protected from edit, d
 
 ## UI
 
-Settings -> "AI control (MCP)": toggle, status, address, port, token (show/copy/regenerate) and a
-"Copy Claude Code command" button. Connect with
+Its own sidebar page (`AppSection.mcp`, `Views/MCPPage.swift`), placed above the profile widget,
+with a green dot when the server is running. Holds the toggle, status, address, port, token
+(show/copy/regenerate) and a "Copy Claude Code command" button. Connect with
 `claude mcp add --transport http ... --header "Authorization: Bearer <token>"`.
 
 ## Keeping the grammar in sync

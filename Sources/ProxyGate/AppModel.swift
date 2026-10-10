@@ -104,6 +104,7 @@ struct HostStat: Identifiable {
 enum AppSection: String, CaseIterable, Identifiable {
     case connections = "Connections", traffic = "Traffic", log = "Log"
     case rules = "Rules", proxies = "Proxies", vpn = "VPN", dpi = "DPI", anyconnect = "AnyConnect", dns = "DNS", settings = "Settings"
+    case mcp = "AI (MCP)"
 
     var id: String { rawValue }
 
@@ -122,6 +123,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .anyconnect: return "lock.shield"
         case .dns: return "globe"
         case .settings: return "gearshape"
+        case .mcp: return "sparkles"
         }
     }
 }

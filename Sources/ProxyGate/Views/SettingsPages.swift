@@ -87,7 +87,6 @@ struct SettingsPage: View {
                         Button("Manage Profiles…") { model.sheet = .profiles }
                     }
                 }
-                MCPSection()
                 Section {
                     LabeledContent("Core status") {
                         if let version = model.xrayVersion {
@@ -202,63 +201,4 @@ struct SettingsPage: View {
         }
     }
 
-}
-
-/// Local MCP endpoint so an AI agent can read and edit rules and read the log and stats.
-private struct MCPSection: View {
-    @Environment(AppModel.self) private var model
-    @State private var showToken = false
-
-    private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    private var setupCommand: String {
-        "claude mcp add --transport http proxygate \(model.mcpURL) --header \"Authorization: Bearer \(model.mcpToken)\""
-    }
-
-    var body: some View {
-        @Bindable var model = model
-        Section {
-            Toggle("Let an AI agent manage rules (MCP)", isOn: $model.mcpEnabled)
-            if model.mcpEnabled {
-                LabeledContent("Status") {
-                    if model.mcpActive {
-                        Text("Active").foregroundStyle(Theme.onFg)
-                    } else if model.mcpRunning {
-                        Text("Waiting for an agent").foregroundStyle(Theme.text2)
-                    } else {
-                        Text("Not running").foregroundStyle(Theme.offFg)
-                    }
-                }
-                LabeledContent("Address") {
-                    Text(model.mcpURL).font(Theme.mono).textSelection(.enabled)
-                }
-                TextField("Port", value: Binding(
-                    get: { model.mcpPort },
-                    set: { model.mcpPort = min(65535, max(1024, $0)) }),
-                    format: .number.grouping(.never))
-                LabeledContent("Token") {
-                    HStack(spacing: 8) {
-                        Text(showToken ? model.mcpToken : String(repeating: "•", count: 20))
-                            .font(Theme.mono).lineLimit(1).truncationMode(.middle)
-                        Button(showToken ? "Hide" : "Show") { showToken.toggle() }
-                        Button("Copy") { copy(model.mcpToken) }
-                        Button("New token") { model.regenerateMCPToken(); showToken = false }
-                    }
-                }
-                Button("Copy Claude Code command") { copy(setupCommand) }
-            }
-        } header: {
-            Text("AI control (MCP)")
-        } footer: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Runs a local server on 127.0.0.1 only, guarded by the token above. An agent can view, add, change, delete and reorder rules, and read the journal and stats. It cannot start redirection or change VPN, DPI or AnyConnect.")
-                Text("To connect from Claude Code, enable this, then run \"Copy Claude Code command\" and paste it in a terminal. The status shows Active once an agent has connected. Regenerate the token to revoke access.")
-            }
-            .font(.caption)
-            .foregroundStyle(Theme.text3)
-        }
-    }
 }

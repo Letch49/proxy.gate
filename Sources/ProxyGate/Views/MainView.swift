@@ -28,6 +28,7 @@ struct MainView: View {
                     case .anyconnect: AnyConnectPage()
                     case .dns: DNSPage()
                     case .settings: SettingsPage()
+                    case .mcp: MCPPage()
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -102,6 +103,8 @@ struct Sidebar: View {
 
             Spacer()
 
+            item(.mcp).padding(.bottom, 6)
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("Profile").font(.system(size: 11)).foregroundStyle(Theme.text3)
                 Picker("Profile", selection: Binding(
@@ -110,7 +113,7 @@ struct Sidebar: View {
                     ForEach(model.profiles) { Text($0.name).lineLimit(1).tag($0.id) }
                 }
                 .labelsHidden()
-                .frame(maxWidth: .infinity)
+                .fixedSize()
                 Button("Manage Profiles…") { model.sheet = .profiles }
                     .buttonStyle(.plain)
                     .font(.system(size: 11.5))
@@ -190,6 +193,8 @@ struct Sidebar: View {
             activeDot(model.tpwsRunning ? Theme.on : Theme.warnFg)
         case .anyconnect where model.anyConnectUp:
             activeDot(Theme.on)
+        case .mcp where model.mcpEnabled:
+            activeDot(model.mcpRunning ? Theme.on : Theme.warnFg)
         default:
             EmptyView()
         }
