@@ -288,7 +288,9 @@ struct HelperBanner: View {
         if !model.helperInstalled || model.helperOutdated {
             HStack(spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warnFg)
-                if model.helperOutdated {
+                if model.helperPinStale && (model.engineStatus.map { $0.version == PGConstants.version } ?? true) {
+                    Text("The helper needs an update for this app build.")
+                } else if model.helperOutdated {
                     Text("The helper (\(model.engineStatus?.version ?? "?")) is older than the app (\(PGConstants.version)).")
                 } else {
                     Text("ProxyGate needs a privileged helper to redirect traffic (asks for the administrator password once).")

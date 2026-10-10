@@ -1,7 +1,7 @@
 import Foundation
 
 public enum PGConstants {
-    public static let version = "0.9.12"
+    public static let version = "0.9.13"
     /// Engine sends counters and the app refreshes live data at this interval (seconds).
     public static let statsInterval: Double = 2
     public static let helperLabel = "com.proxygate.engine"
@@ -241,9 +241,9 @@ public enum ClientCommand: Codable, Sendable {
     case config(Profile)
     case start
     case stop
-    /// Install the Xray core from the release zip the app downloaded to `zipPath`.
-    /// The engine re-checks `sha256` of the zip before trusting it.
-    case installXray(zipPath: String, version: String, sha256: String)
+    /// Install the Xray core from the release zip the app downloaded to `zipPath`. The engine copies
+    /// it and checks the copy against the release checksum it fetches itself for the `version` tag.
+    case installXray(zipPath: String, version: String)
     /// Full Xray JSON config to run, or nil to stop the core. The engine restarts
     /// the core process when the config changes.
     case xrayConfig(String?)
@@ -251,12 +251,14 @@ public enum ClientCommand: Codable, Sendable {
     case activeBridge(Bridge)
     /// Measure TCP latency to these servers (the engine's probes bypass pf), reply with pingResults.
     case pingServers(subscription: UUID, targets: [PingTarget])
-    /// Install the tpws DPI-bypass core the app downloaded and verified to `path`.
-    case installTpws(path: String, version: String, sha256: String)
+    /// Install the tpws binary the app extracted to `path`. The engine copies it and checks the copy
+    /// against the release `sha256sum.txt` it fetches itself for the `version` tag.
+    case installTpws(path: String, version: String)
     /// Run tpws with these strategy flags (e.g. "--split-pos=1 --disorder"), or nil to stop it.
     case tpwsStrategy([String]?)
-    /// Install the ByeDPI (ciadpi) core the app downloaded and verified to `path`.
-    case installByedpi(path: String, version: String, sha256: String)
+    /// Install ByeDPI (ciadpi) from the release tarball the app downloaded to `tarballPath`. The
+    /// engine checks it against the hash pinned in `CoreReleases` and extracts the binary itself.
+    case installByedpi(tarballPath: String, version: String)
     /// Run ByeDPI with these ciadpi flags, or nil to stop it.
     case byedpiStrategy([String]?)
     /// Whether connections routed `.direct` should go through tpws (DPI bypass on).

@@ -108,6 +108,7 @@ the app reinstalls the helper. App-only changes do not need a bump.
 
 ## Downloaded cores
 
-Xray and tpws are downloaded by the app, SHA256-verified, then handed to the engine, which
-re-verifies before install. Verify before clearing the quarantine xattr. See [security] for the
+The app downloads the cores and hands the files to the engine. The engine stages its own copy and
+verifies it against a hash it gets itself (Xray `.dgst`, zapret `sha256sum.txt`, a pinned ByeDPI
+table), never one sent by the client. Verify before clearing the quarantine xattr. See [security] for the
 supply-chain caveat under network TLS inspection.

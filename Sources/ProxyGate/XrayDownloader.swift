@@ -2,8 +2,9 @@ import Foundation
 import PGCore
 
 /// Downloads the Xray core release from GitHub (as the app, over the normal network) and verifies
-/// it against the release's published checksum. The verified zip path is then handed to the engine,
-/// which installs it with root privileges (see ClientCommand.installXray).
+/// it against the release's published checksum, so a bad download fails early. The zip path is then
+/// handed to the engine, which re-checks a staged copy against the checksum it fetches itself
+/// (see ClientCommand.installXray).
 enum XrayDownloader {
     struct Release {
         let version: String
@@ -14,14 +15,10 @@ enum XrayDownloader {
     struct Prepared {
         let zipPath: String
         let version: String
-        let sha256: String
     }
 
-    #if arch(arm64)
-    private static let assetName = "Xray-macos-arm64-v8a.zip"
-    #else
-    private static let assetName = "Xray-macos-64.zip"
-    #endif
+    /// Same pick as the engine, so it accepts the zip.
+    private static var assetName: String { CoreReleases.xrayAssetName(arm64: CoreReleases.isAppleSilicon) }
 
     /// Looks up the latest release and the asset for this Mac's architecture.
     static func latest() async throws -> Release {
@@ -35,6 +32,7 @@ enum XrayDownloader {
               let assets = json["assets"] as? [[String: Any]] else {
             throw NetError("unexpected GitHub response")
         }
+        guard CoreReleases.isValidTag(tag) else { throw NetError("unexpected Xray release tag") }
         func url(_ name: String) -> URL? {
             assets.first { ($0["name"] as? String) == name }
                 .flatMap { $0["browser_download_url"] as? String }
@@ -76,24 +74,14 @@ enum XrayDownloader {
 
         let (dgstData, dgstResponse) = try await URLSession.shared.data(from: release.dgstURL)
         try check(dgstResponse)
-        guard let expected = parseSHA256(String(decoding: dgstData, as: UTF8.self)) else {
+        guard let expected = CoreReleases.parseDgst(String(decoding: dgstData, as: UTF8.self)) else {
             throw NetError("no SHA2-256 in the release checksum file")
         }
         let actual = try sha256(of: zipPath)
         guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
             throw NetError("downloaded Xray archive is corrupt (checksum mismatch)")
         }
-        return Prepared(zipPath: zipPath.path, version: release.version, sha256: expected)
-    }
-
-    private static func parseSHA256(_ text: String) -> String? {
-        for line in text.split(whereSeparator: \.isNewline) {
-            // Lines look like "SHA2-256= <hex>".
-            if line.uppercased().contains("SHA2-256") {
-                return line.split(whereSeparator: { $0 == " " || $0 == "=" }).last.map(String.init)
-            }
-        }
-        return nil
+        return Prepared(zipPath: zipPath.path, version: release.version)
     }
 
     private static func sha256(of file: URL) throws -> String {

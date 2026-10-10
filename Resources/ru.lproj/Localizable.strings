@@ -33,6 +33,7 @@
 "Update Helper" = "Обновить хелпер";
 "ProxyGate needs a privileged helper to redirect traffic (asks for the administrator password once)." = "Для перенаправления трафика нужен привилегированный хелпер (пароль администратора спросят один раз).";
 "The helper (%@) is older than the app (%@)." = "Хелпер (%@) старее приложения (%@).";
+"The helper needs an update for this app build." = "Хелпер нужно обновить для этой сборки приложения.";
 "ProxyGate needs its privileged helper to redirect traffic. Install it in Advanced settings or from the banner." = "Для перенаправления трафика нужен хелпер. Установите его в разделе «Дополнительно» или из баннера.";
 "Helper installation failed: %@" = "Не удалось установить хелпер: %@";
 "Helper removal failed: %@" = "Не удалось удалить хелпер: %@";

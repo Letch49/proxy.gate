@@ -80,9 +80,9 @@ final class Engine: @unchecked Sendable {
 
     // MARK: - Xray core
 
-    func installXray(zipPath: String, version: String, sha256: String) {
+    func installXray(zipPath: String, version: String) {
         do {
-            try xray.install(fromZip: zipPath, version: version, sha256: sha256)
+            try xray.install(fromZip: zipPath, version: version)
             log(.info, "Xray core \(version) installed")
             if let json = lock.withLock({ xrayConfigJSON }) { xray.apply(config: json) }
         } catch {
@@ -103,9 +103,9 @@ final class Engine: @unchecked Sendable {
 
     // MARK: - DPI bypass (tpws)
 
-    func installTpws(path: String, version: String, sha256: String) {
+    func installTpws(path: String, version: String) {
         do {
-            try tpws.install(from: path, version: version, sha256: sha256)
+            try tpws.install(from: path, version: version)
             log(.info, "tpws \(version) installed")
             if let strategy = lock.withLock({ tpwsStrategy }) { tpws.apply(strategy: strategy) }
         } catch {
@@ -120,9 +120,9 @@ final class Engine: @unchecked Sendable {
         if let err = tpws.error { log(.warning, err) }
     }
 
-    func installByedpi(path: String, version: String, sha256: String) {
+    func installByedpi(tarballPath: String, version: String) {
         do {
-            try byedpi.install(from: path, version: version, sha256: sha256)
+            try byedpi.install(fromTarball: tarballPath, version: version)
             log(.info, "ByeDPI \(version) installed")
             if let strategy = lock.withLock({ byedpiStrategy }) { byedpi.apply(strategy: strategy) }
         } catch {

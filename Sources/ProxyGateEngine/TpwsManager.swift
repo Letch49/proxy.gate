@@ -1,11 +1,10 @@
-import CryptoKit
 import Darwin
 import Foundation
 import PGCore
 
 /// Manages the tpws DPI-bypass core (from the zapret project). Runs it as a local SOCKS proxy under
-/// the shared `_proxygate` service account — so pf passes its outbound (same loop-prevention as Xray)
-/// — with the chosen desync strategy on its command line. No config file: strategy = argv flags.
+/// the shared `_proxygate` service account, so pf passes its outbound (same loop-prevention as Xray),
+/// with the chosen desync strategy on its command line. No config file: strategy = argv flags.
 final class TpwsManager: @unchecked Sendable {
     private let lock = NSLock()
     private var lastError: String?
@@ -22,24 +21,21 @@ final class TpwsManager: @unchecked Sendable {
 
     var error: String? { lock.withLock { lastError } }
 
-    /// Verifies the tpws binary the app downloaded, then installs it into the support dir.
-    func install(from path: String, version: String, sha256 expected: String) throws {
-        guard let data = FileManager.default.contents(atPath: path) else {
-            throw NetError("downloaded tpws not found at \(path)")
+    /// Installs the tpws binary the app extracted. The client only names the file: the engine stages
+    /// a copy and checks it against the release `sha256sum.txt` it fetches itself for `version`.
+    func install(from path: String, version: String) throws {
+        guard let sumURL = CoreReleases.tpwsChecksumURL(tag: version) else {
+            throw NetError("rejected tpws version tag")
         }
-        let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
-            throw NetError("tpws checksum mismatch")
+        let dir = try CoreInstall.makeStagingDir()
+        defer { CoreInstall.remove(dir) }
+        let staged = try CoreInstall.stage(path, in: dir, name: "tpws")
+        let sums = try CoreInstall.fetchText(sumURL)
+        guard let entry = CoreReleases.tpwsEntry(inSumFile: sums) else {
+            throw NetError("tpws checksum not found in the release")
         }
-        try FileManager.default.createDirectory(atPath: PGConstants.supportDir, withIntermediateDirectories: true)
-        let tmp = PGConstants.tpwsPath + ".new"
-        try? FileManager.default.removeItem(atPath: tmp)
-        try data.write(to: URL(fileURLWithPath: tmp))
-        _ = ServiceUser.shell("/usr/bin/xattr", ["-d", "com.apple.quarantine", tmp])
-        _ = ServiceUser.shell("/bin/chmod", ["755", tmp])
-        _ = ServiceUser.shell("/usr/sbin/chown", ["root:wheel", tmp])
-        _ = try? FileManager.default.removeItem(atPath: PGConstants.tpwsPath)
-        try FileManager.default.moveItem(atPath: tmp, toPath: PGConstants.tpwsPath)
+        guard staged.sha256 == entry.sha256 else { throw NetError("tpws checksum mismatch") }
+        try CoreInstall.place(staged.path, at: PGConstants.tpwsPath, mode: 0o755)
         try version.write(toFile: PGConstants.tpwsVersionPath, atomically: true, encoding: .utf8)
     }
 

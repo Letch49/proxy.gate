@@ -329,7 +329,11 @@ final class AppModel {
 
     var isRunning: Bool { engineStatus?.running ?? false }
 
+    /// The installed helper pins another app build's cdhash, so it refuses this app.
+    var helperPinStale = HelperInstaller.needsReinstall
+
     var helperOutdated: Bool {
+        if helperPinStale { return true }
         guard let version = engineStatus?.version else { return false }
         return version != PGConstants.version
     }
@@ -422,13 +426,14 @@ final class AppModel {
                     DispatchQueue.main.async { self.xrayMessage = "\(String(localized: "Downloading")) \(percent)%" }
                 }
                 await MainActor.run {
-                    self.client.send(.installXray(zipPath: ready.zipPath, version: ready.version, sha256: ready.sha256))
+                    self.client.send(.installXray(zipPath: ready.zipPath, version: ready.version))
                     self.xrayMessage = String(localized: "Installing \(ready.version)…")
                     self.addLog("VPN core \(ready.version) downloaded, installing", .notice)
                     // The engine replies with a status once installed; fail loudly if it never does.
+                    // Longer than the engine's own checksum fetch timeout (45 s) plus staging and unzip.
                     self.xrayInstallToken += 1
                     let token = self.xrayInstallToken
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 75) { [weak self] in
                         guard let self, self.xrayBusy, self.xrayInstallToken == token else { return }
                         self.xrayBusy = false
                         self.xrayMessage = nil
@@ -494,7 +499,7 @@ final class AppModel {
             do {
                 let ready = try await TpwsDownloader.prepare()
                 await MainActor.run {
-                    self.client.send(.installTpws(path: ready.binaryPath, version: ready.version, sha256: ready.sha256))
+                    self.client.send(.installTpws(path: ready.binaryPath, version: ready.version))
                     self.tpwsMessage = String(localized: "Installing \(ready.version)…")
                     self.addLog("DPI-bypass core (tpws) \(ready.version) downloaded, installing", .notice)
                 }
@@ -516,7 +521,7 @@ final class AppModel {
             do {
                 let ready = try await ByeDpiDownloader.prepare()
                 await MainActor.run {
-                    self.client.send(.installByedpi(path: ready.binaryPath, version: ready.version, sha256: ready.sha256))
+                    self.client.send(.installByedpi(tarballPath: ready.tarballPath, version: ready.version))
                     self.byedpiMessage = String(localized: "Installing \(ready.version)…")
                     self.addLog("ByeDPI core \(ready.version) downloaded, installing", .notice)
                 }
@@ -1236,6 +1241,7 @@ final class AppModel {
             await MainActor.run {
                 self.helperBusy = false
                 self.helperInstalled = HelperInstaller.isInstalled
+                self.helperPinStale = HelperInstaller.needsReinstall
                 switch result {
                 case .success:
                     self.addLog("Helper installed", .notice)
@@ -1267,6 +1273,7 @@ final class AppModel {
     private func engineConnectionChanged(_ connected: Bool) {
         engineConnected = connected
         helperInstalled = HelperInstaller.isInstalled
+        helperPinStale = HelperInstaller.needsReinstall
         if connected {
             client.send(.hello(version: PGConstants.version))
             client.send(.config(profile))
@@ -1508,6 +1515,7 @@ final class AppModel {
         }
         if !engineConnected {
             helperInstalled = HelperInstaller.isInstalled
+            helperPinStale = HelperInstaller.needsReinstall
         }
         autoPing()
     }
