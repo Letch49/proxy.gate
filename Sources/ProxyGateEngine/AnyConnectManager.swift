@@ -26,6 +26,37 @@ final class AnyConnectManager: @unchecked Sendable {
             .first { FileManager.default.fileExists(atPath: $0) }
     }
 
+    /// The server pushes its own DNS resolvers and a search domain; the macOS vpnc-script writes them
+    /// into the active network service. Those resolvers answer only from behind the tunnel, so once
+    /// written they break all name resolution, including the route to the concentrator, and they
+    /// linger on the interface after a crash. We don't want system DNS touched, so we run the real
+    /// script through a wrapper that drops the DNS variables. Routes and the utun device are still set
+    /// up as usual. The wrapper is written root-owned into the support dir so only root can edit what
+    /// openconnect execs. Returns the real script path if the wrapper can't be written.
+    private static func dnsSafeScript() -> String? {
+        guard let real = vpncScript() else { return nil }
+        let path = supportDir + "/vpnc-nodns"
+        let quoted = "'" + real.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let body = """
+        #!/bin/sh
+        # Do not let AnyConnect write its DNS onto the system interfaces.
+        unset INTERNAL_IP4_DNS INTERNAL_IP6_DNS CISCO_DEF_DOMAIN CISCO_SPLIT_DNS
+        exec \(quoted) "$@"
+
+        """
+        do {
+            try FileManager.default.createDirectory(atPath: supportDir, withIntermediateDirectories: true)
+            try body.write(toFile: path, atomically: true, encoding: .utf8)
+            _ = Shell.run("/usr/sbin/chown", ["root:wheel", path])
+            _ = Shell.run("/bin/chmod", ["755", path])
+        } catch {
+            return real
+        }
+        return path
+    }
+
+    private static let supportDir = PGConstants.supportDir
+
     /// host[:port] or https URL, no leading "-" (would be read as an option), no shell/space chars.
     static func isSafeServer(_ s: String) -> Bool {
         guard !s.isEmpty, !s.hasPrefix("-"), s.count <= 253 else { return false }
@@ -62,7 +93,7 @@ final class AnyConnectManager: @unchecked Sendable {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
         var args = ["--protocol=anyconnect", "--user=\(user)", "--passwd-on-stdin", "--non-inter"]
-        if let script = Self.vpncScript() { args += ["--script", script] }
+        if let script = Self.dnsSafeScript() { args += ["--script", script] }
         // "--" stops option parsing so the server can never be read as an option flag.
         args += ["--", server]
         p.arguments = args
@@ -80,7 +111,7 @@ final class AnyConnectManager: @unchecked Sendable {
         try? inPipe.fileHandleForWriting.close()
         lock.withLock { process = p }
         emit(.init(phase: .awaitingApproval, server: server,
-                   message: "Approve the sign-in on your phone (Telegram)…"))
+                   message: "Approve the sign-in from the push on your phone…"))
         Thread { [weak self] in self?.readOutput(outPipe.fileHandleForReading, server: server) }.start()
         p.terminationHandler = { [weak self] _ in self?.handleExit(server: server) }
     }

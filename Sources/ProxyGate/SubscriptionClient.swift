@@ -2,7 +2,7 @@ import Foundation
 import PGCore
 
 /// Fetches a subscription as the app (normal network, macOS system trust — handles modern roots
-/// that Python's bundled CA list misses). Identifies as Happ so Remnawave-style panels return the
+/// that Python's bundled CA list misses). Identifies as Happ so subscription panels return the
 /// full Xray JSON config.
 enum SubscriptionClient {
     struct Fetched {

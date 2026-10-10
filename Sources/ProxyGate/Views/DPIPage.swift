@@ -29,11 +29,11 @@ struct DPIPage: View {
                 // Main switch
                 HStack(spacing: 14) {
                     Toggle("", isOn: Binding(get: { model.bypassEnabled }, set: { model.setBypass($0) }))
-                        .toggleStyle(.switch).labelsHidden()
+                        .toggleStyle(.switch).controlSize(.mini).labelsHidden()
                         .disabled(model.tpwsVersion == nil)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("DPI bypass").font(.system(size: 15, weight: .semibold))
-                        Text(modeNote).font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("DPI bypass").font(.system(size: 13, weight: .semibold))
+                        Text(modeNote).font(.system(size: 11)).foregroundStyle(Theme.text2).lineLimit(1)
                     }
                     Spacer()
                     if model.bypassEnabled {
@@ -42,7 +42,8 @@ struct DPIPage: View {
                              fg: model.tpwsRunning ? Theme.onFg : Theme.warnFg)
                     }
                 }
-                .padding(16).card(radius: 12, border: model.bypassEnabled ? Theme.accentBorder : Theme.border)
+                .padding(.horizontal, 14).padding(.vertical, 11)
+                .card(radius: 12, border: model.bypassEnabled ? Theme.accentBorder : Theme.border)
                 if let error = model.tpwsError {
                     Text(error).font(.caption).foregroundStyle(Theme.warnFg).textSelection(.enabled)
                 }

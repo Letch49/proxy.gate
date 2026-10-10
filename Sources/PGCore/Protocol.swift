@@ -1,7 +1,7 @@
 import Foundation
 
 public enum PGConstants {
-    public static let version = "0.9.6"
+    public static let version = "0.9.7"
     /// Engine sends counters and the app refreshes live data at this interval (seconds).
     public static let statsInterval: Double = 2
     public static let helperLabel = "com.proxygate.engine"

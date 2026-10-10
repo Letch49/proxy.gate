@@ -216,6 +216,22 @@ final class AppModel {
     var loopThreshold: Int {
         didSet { UserDefaults.standard.set(loopThreshold, forKey: "loopThreshold") }
     }
+
+    // MCP server: a local, token-authenticated endpoint that lets an AI agent read and edit rules.
+    var mcpEnabled: Bool {
+        didSet { UserDefaults.standard.set(mcpEnabled, forKey: "mcpEnabled"); applyMCP() }
+    }
+    var mcpPort: Int {
+        didSet { UserDefaults.standard.set(mcpPort, forKey: "mcpPort"); if mcpEnabled { applyMCP() } }
+    }
+    /// Set to the moment an agent first authenticates, so Settings can show the endpoint as active.
+    var mcpLastSeen: Date? {
+        didSet { UserDefaults.standard.set(mcpLastSeen?.timeIntervalSince1970, forKey: "mcpLastSeen") }
+    }
+    /// Bearer token, mirrored in the Keychain.
+    var mcpToken: String = ""
+    @ObservationIgnored var mcpServer: MCPServer?
+
     @ObservationIgnored private let client = EngineClient()
     @ObservationIgnored private var logCounter = 0
     @ObservationIgnored private var pendingDown: UInt64 = 0
@@ -247,6 +263,10 @@ final class AppModel {
         loopDetection = defaults.object(forKey: "loopDetection") as? Bool ?? true
         loopThreshold = defaults.object(forKey: "loopThreshold") as? Int ?? 300
         wantRunning = defaults.bool(forKey: "autoStart")
+        mcpEnabled = defaults.bool(forKey: "mcpEnabled")
+        mcpPort = defaults.object(forKey: "mcpPort") as? Int ?? MCPServer.defaultPort
+        if let ts = defaults.object(forKey: "mcpLastSeen") as? Double { mcpLastSeen = Date(timeIntervalSince1970: ts) }
+        mcpToken = AppModel.loadOrCreateMCPToken()
 
         client.onConnection = { [weak self] connected in self?.engineConnectionChanged(connected) }
         client.onMessages = { [weak self] messages in self?.handle(messages) }
@@ -255,6 +275,7 @@ final class AppModel {
         loadRememberedBridges()
         netWatcher.onChange = { [weak self] in self?.networkChanged() }
         netWatcher.start()
+        applyMCP()
 
         timer = Timer.scheduledTimer(withTimeInterval: PGConstants.statsInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -1003,6 +1024,51 @@ final class AppModel {
     }
 
     func toggleVPN() { vpnConnected ? disconnectVPN() : connectVPN() }
+
+    // MARK: - Proxy bridge
+
+    /// True when a proxy is the active bridge (the proxy "Connect" is on).
+    var proxyConnected: Bool { if case .proxy = activeBridge { return true }; return false }
+
+    /// The proxy the bridge is pointed at right now, when a proxy is connected.
+    var connectedProxyID: UUID? { if case .proxy(let id) = activeBridge { return id }; return nil }
+
+    /// The proxy the bridge would use: the chosen one if it still exists, else the first.
+    private func bridgeProxyID() -> UUID? {
+        if let id = profile.activeProxyID, profile.proxies.contains(where: { $0.id == id }) { return id }
+        return profile.proxies.first?.id
+    }
+
+    /// Makes the chosen proxy the active bridge: routes `.global` rules through it and starts
+    /// interception. Mirrors `connectVPN`.
+    func connectProxy() {
+        guard let id = bridgeProxyID() else {
+            alertMessage = String(localized: "Add a proxy first.")
+            return
+        }
+        profile.activeProxyID = id
+        setActiveBridge(.proxy(id))
+        remember(.proxy(id))
+        wantRunning = true
+        start()
+        addLog("Proxy connected", .notice)
+    }
+
+    /// Drops back to direct; leaves interception and rules as they are.
+    func disconnectProxy() {
+        setActiveBridge(.direct)
+        addLog("Proxy disconnected", .notice)
+    }
+
+    func toggleProxy() { proxyConnected ? disconnectProxy() : connectProxy() }
+
+    /// Picks which proxy the bridge uses; switches on the spot if a proxy is already connected.
+    func selectProxyBridge(_ id: UUID) {
+        profile.activeProxyID = id
+        guard proxyConnected else { return }
+        setActiveBridge(.proxy(id))
+        remember(.proxy(id))
+    }
 
     func removeSubscription(_ id: UUID) {
         var p = profile

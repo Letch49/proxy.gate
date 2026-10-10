@@ -107,19 +107,33 @@ final class Engine: @unchecked Sendable {
     }
 
     /// Tries each strategy against known-blocked hosts; emits the first that works (or -1).
+    /// Logs each strategy and the hosts it was tested on, so the app's journal shows what ran and
+    /// what worked.
     func tuneBypass(hosts: [String]) {
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             let hosts = hosts.isEmpty ? ["www.youtube.com", "discord.com"] : hosts
+            self.log(.info, "DPI auto-tune started on: \(hosts.joined(separator: ", "))")
             var winner = -1
             for (index, strategy) in DPIStrategies.all.enumerated() {
-                if hosts.contains(where: { self.tpws.probe(flags: strategy.flags, host: $0) }) {
+                var okHost: String?
+                var tried: [String] = []
+                for host in hosts {
+                    tried.append(host)
+                    if self.tpws.probe(flags: strategy.flags, host: host) { okHost = host; break }
+                }
+                if let okHost {
+                    self.log(.info, "DPI auto-tune: \(strategy.label) works on \(okHost)")
                     winner = index
                     break
                 }
+                self.log(.info, "DPI auto-tune: \(strategy.label) did not help (\(tried.joined(separator: ", ")))")
             }
             // Restore the user's running strategy (probes bounced the service around).
             if let strategy = self.lock.withLock({ self.tpwsStrategy }) { self.tpws.apply(strategy: strategy) }
+            if winner < 0 {
+                self.log(.warning, "DPI auto-tune: no strategy worked on the tested hosts")
+            }
             self.emit(.bypassTuned(index: winner))
         }
     }

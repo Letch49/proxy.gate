@@ -3,9 +3,9 @@ import PGCore
 
 /// Checks that a sniffed hostname really points at the connection's destination IP.
 ///
-/// Apps can put any name into SNI / Host (Telegram's obfuscation sends "www.google.com" to its own
-/// servers). Passing such a name to the proxy would connect somewhere else entirely, so the proxy
-/// only gets the name when it resolves to the address the app actually dialed.
+/// Apps can put any name into SNI / Host (domain-fronting apps send e.g. "www.google.com" while
+/// dialing their own servers). Passing such a name to the proxy would connect somewhere else
+/// entirely, so the proxy only gets the name when it resolves to the address the app actually dialed.
 final class HostVerifier: @unchecked Sendable {
     private let lock = NSLock()
     private var cache: [String: (ips: Set<IPAddr>, expires: Date)] = [:]

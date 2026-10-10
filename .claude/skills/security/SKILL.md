@@ -1,0 +1,74 @@
+---
+name: security
+description: ProxyGate security rules. Load when touching the root engine, the control socket, launchd plists, external cores (Xray, tpws, openconnect), downloads and hashes, secrets, or user input parsing.
+---
+
+# ProxyGate security
+
+The engine runs as root. A fault here is a root exploit, so hold this line.
+
+## Trust boundary
+
+- Everything from the control socket is untrusted. The peer could be any local process.
+- Today the socket authenticates the peer by uid only (`getpeereid`). Treat that as weak: validate
+  every field before acting, do not rely on the caller being honest.
+- Validate input, then act. Never pass socket data straight into a shell, a path, or a plist.
+
+## Processes and arguments
+
+- Launch external tools only through `Shell.run`. It closes pipe descriptors, so no fd leak.
+- Validate arguments to the cores against an allowlist before they reach a command line:
+  - tpws flags: `TpwsManager.validStrategy` (strict regex, reject anything else).
+  - AnyConnect host and user: `isSafeServer` / `isSafeUser`, reject a leading `-`.
+- Put `--` before any operand that could look like a flag.
+
+## LaunchDaemon plists
+
+- Build plists from a dictionary with `PropertyListSerialization`, never by string interpolation.
+  Interpolating untrusted args into XML is a root RCE.
+- Write them root owned, mode 644, through `LaunchdJob.writePlist`.
+
+## Parsing must not crash
+
+- The engine must survive junk input. A crash is a denial of service on root.
+- Guard `first`, empty strings, and bounds in rule, network, and port parsing. Example paths:
+  `PFRules.validNetworks`, `Matching.parsePorts`, `RuleShadow`. Cover each with a test.
+
+## Secrets and logs
+
+- `profiles.json` holds proxy passwords and subscription tokens. Mode 0600.
+- Logs can hold connection targets. Create them mode 0600, owned by the service user.
+- The AnyConnect password lives in the Keychain, not on disk.
+- Never log or comment a token, a password, a real host, or a real IP.
+
+## Downloads and supply chain
+
+- Verify the SHA256 of a downloaded binary before use.
+- Verify before clearing the quarantine xattr, not after.
+- The corporate network does TLS inspection, so a plain TLS fetch of a hash is not a strong anchor.
+  Prefer a hash pinned in code or a signature check. Flag this when you touch the download path.
+
+## Open items
+
+These are known and not yet fixed. Do not regress them, and prefer fixing over working around:
+
+- Socket auth by uid only. Stronger: verify the client code signature or Team ID via audit token.
+- Binary hashes come over TLS with no pinning under corporate MITM.
+- A raw Xray config string can open a non loopback inbound. Force inbound to 127.0.0.1 server side.
+- The helper install script lands in a user writable temp dir (TOCTOU). Prefer SMAppService.
+
+## Already hardened (do not regress)
+
+A security pass fixed these; keep them in place:
+
+- LaunchDaemon plists are built via `PropertyListSerialization`, never string interpolation.
+- tpws flags and the AnyConnect host/user are allowlisted before they reach a command line.
+- Every external process goes through `Shell.run`, which closes pipe descriptors (no fd leak).
+- Rule, network and port parsing guards `first`/empty/bounds, so junk input cannot crash the engine.
+- Secret-bearing files and logs are mode 0600.
+- `Engine.start()` does the blocking pf/listen/subprocess work outside the lock.
+
+## Before you finish
+
+Re-read your diff for: an unvalidated socket field, a string built into a plist or shell, a parse
+that can crash, a secret in a log or comment. `swift test` green.

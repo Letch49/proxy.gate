@@ -78,6 +78,27 @@ private func app(_ name: String, bundle: String? = nil, bundles: [String] = []) 
     #expect(RuleSet(profile: profile).match(MatchRequest(app: chrome, hostname: "ya.ru", ip: IPAddr("5.255.255.242")!, port: 443)).name == "Default")
 }
 
+/// The same target grammar (host wildcards, IP masks, ranges, CIDR) works for any action.
+@Test func universalHostTargets() throws {
+    var profile = Profile.makeDefault()
+    profile.rules.insert(Rule(name: "mask", targetHosts: "10.*", action: .block), at: 0)
+    profile.rules.insert(Rule(name: "range", targetHosts: "203.0.113.10-203.0.113.200", action: .direct), at: 1)
+    profile.rules.insert(Rule(name: "cidr", targetHosts: "192.168.0.0/16", action: .direct), at: 2)
+    profile.rules.insert(Rule(name: "glob", targetHosts: "*.example.com", action: .direct), at: 3)
+    let rules = RuleSet(profile: profile, computerName: "mac")
+    let a = app("curl")
+    func name(_ host: String?, _ ip: String) -> String {
+        rules.match(MatchRequest(app: a, hostname: host, ip: IPAddr(ip)!, port: 443)).name
+    }
+    #expect(name(nil, "10.255.1.2") == "mask")          // 10.* mask on the IP
+    #expect(name(nil, "11.0.0.1") == "Default")         // mask does not over-match
+    #expect(name(nil, "203.0.113.50") == "range")       // inside the range
+    #expect(name(nil, "203.0.113.250") == "Default")    // just past the range
+    #expect(name(nil, "192.168.9.9") == "cidr")         // CIDR
+    #expect(name("www.example.com", "1.2.3.4") == "glob")
+    #expect(name("example.com", "1.2.3.4") == "glob")   // *.example.com also covers the bare host
+}
+
 struct StubGeo: GeoMatching {
     let ruDomains: Set<String>
     func matches(token: String, host: String?, ip: IPAddr) -> Bool {

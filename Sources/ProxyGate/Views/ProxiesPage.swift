@@ -19,7 +19,14 @@ struct ProxiesPage: View {
                     } label: {
                         Label("Add Proxy", systemImage: "plus")
                     }
-                    .buttonStyle(AccentButtonStyle())
+                    .buttonStyle(GhostButtonStyle())
+                    if !model.profile.proxies.isEmpty {
+                        if model.proxyConnected {
+                            Button("Disconnect") { model.disconnectProxy() }.buttonStyle(GhostButtonStyle(destructive: true))
+                        } else {
+                            Button("Connect") { model.connectProxy() }.buttonStyle(AccentButtonStyle())
+                        }
+                    }
                 }
 
                 if model.profile.proxies.isEmpty {
@@ -99,8 +106,19 @@ struct ProxyCard: View {
     var body: some View {
         let status = model.proxyStatus[proxy.id]
         let checking = model.checkingProxies.contains(proxy.id)
+        let connected = model.connectedProxyID == proxy.id
+        let multiple = model.profile.proxies.count > 1
+        let isBridge = (model.profile.activeProxyID ?? model.profile.proxies.first?.id) == proxy.id
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
+                if multiple {
+                    Button { model.selectProxyBridge(proxy.id) } label: {
+                        Image(systemName: isBridge ? "largecircle.fill.circle" : "circle")
+                            .foregroundStyle(isBridge ? Theme.accent : Theme.text3)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Use this proxy when connected")
+                }
                 Image(systemName: "server.rack")
                     .frame(width: 36, height: 36)
                     .foregroundStyle(Color(hex: 0xB9C1CA))
@@ -112,6 +130,7 @@ struct ProxyCard: View {
                         .foregroundStyle(Theme.text2)
                 }
                 Spacer()
+                if connected { Pill(text: "Connected", bg: Theme.onBg, fg: Theme.onFg) }
                 if checking {
                     ProgressView().controlSize(.small)
                 } else if let status {
@@ -149,7 +168,7 @@ struct ProxyCard: View {
             }
         }
         .padding(16)
-        .card(radius: 12, border: status?.ok == true ? Theme.accentBorder : Theme.border)
+        .card(radius: 12, border: connected || status?.ok == true ? Theme.accentBorder : Theme.border)
     }
 
     private var typeName: String {

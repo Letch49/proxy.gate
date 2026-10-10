@@ -33,7 +33,7 @@ struct AnyConnectPage: View {
                         SecureField("", text: $password, prompt: Text("••••••••"))
                     }
                     HStack {
-                        Text("The second factor is approved on your phone (Telegram) — nothing to type here.")
+                        Text("The second factor is approved by a push on your phone — nothing to type here.")
                             .font(.caption).foregroundStyle(Theme.text3)
                         Spacer()
                         if model.anyConnectUp || model.anyConnectBusy {
@@ -65,7 +65,7 @@ struct AnyConnectPage: View {
             row(spinner: true, title: String(localized: ac.phase == .authenticating ? "Authorizing…" : "Connecting…"), sub: nil, accent: true)
         case .awaitingApproval:
             row(spinner: true, title: String(localized: "Approve the sign-in on your phone"),
-                sub: String(localized: "A Telegram request “Is this you?” was sent — tap Approve."), accent: true)
+                sub: String(localized: "A push “Is this you?” was sent to your phone — tap Approve."), accent: true)
         case .connected:
             row(spinner: false, title: String(localized: "Connected · \(ac.server ?? "")"),
                 sub: ac.routes.isEmpty ? String(localized: "corporate subnets routed through the tunnel")

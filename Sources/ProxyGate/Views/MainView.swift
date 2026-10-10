@@ -107,15 +107,18 @@ struct Sidebar: View {
                 Picker("Profile", selection: Binding(
                     get: { model.activeProfileID },
                     set: { model.activate($0) })) {
-                    ForEach(model.profiles) { Text($0.name).tag($0.id) }
+                    ForEach(model.profiles) { Text($0.name).lineLimit(1).tag($0.id) }
                 }
                 .labelsHidden()
+                .frame(maxWidth: .infinity)
                 Button("Manage Profiles…") { model.sheet = .profiles }
                     .buttonStyle(.plain)
                     .font(.system(size: 11.5))
                     .foregroundStyle(Theme.accentFg)
+                    .lineLimit(1)
             }
-            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
             .background(Theme.surface, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(hex: 0x2A3037)))
         }
@@ -171,7 +174,9 @@ struct Sidebar: View {
                 .background(Color(hex: 0x2B3A3A), in: Capsule())
         case .rules:
             Text("\(model.profile.rules.count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.text3)
-        case .proxies:
+        case .proxies where model.proxyConnected:
+            activeDot(Theme.on)
+        case .proxies where model.profile.proxies.count > 1:
             Text("\(model.profile.proxies.count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.text3)
         case .settings where model.updateCount > 0:
             Text("\(model.updateCount)")
