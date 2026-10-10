@@ -93,8 +93,14 @@ public struct Rule: Codable, Identifiable, Hashable, Sendable {
     /// Auto-managed rule (AnyConnect routes): shown read-only and highlighted, removed when the
     /// tunnel drops. Implies locked.
     public var dynamic = false
+    /// For a `.directDPI` rule: the core that bypasses its traffic. nil = the profile's primary core.
+    public var dpiEngine: DPIEngine?
+    /// For a `.directDPI` rule: hosts the auto-tune probes for it, `;`-separated. Empty = derived
+    /// from `targetHosts` (see `TuneHosts.probeHosts`).
+    public var testHosts = ""
 
-    public init(name: String, applications: String = "", targetHosts: String = "", targetPorts: String = "", action: RuleAction = .direct, isDefault: Bool = false, locked: Bool = false, dynamic: Bool = false) {
+    public init(name: String, applications: String = "", targetHosts: String = "", targetPorts: String = "", action: RuleAction = .direct, isDefault: Bool = false, locked: Bool = false, dynamic: Bool = false,
+                dpiEngine: DPIEngine? = nil, testHosts: String = "") {
         self.name = name
         self.applications = applications
         self.targetHosts = targetHosts
@@ -103,6 +109,8 @@ public struct Rule: Codable, Identifiable, Hashable, Sendable {
         self.isDefault = isDefault
         self.locked = locked || dynamic
         self.dynamic = dynamic
+        self.dpiEngine = dpiEngine
+        self.testHosts = testHosts
     }
 
     public init(from decoder: Decoder) throws {
@@ -117,6 +125,8 @@ public struct Rule: Codable, Identifiable, Hashable, Sendable {
         isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
         locked = try c.decodeIfPresent(Bool.self, forKey: .locked) ?? false
         dynamic = try c.decodeIfPresent(Bool.self, forKey: .dynamic) ?? false
+        dpiEngine = try c.decodeIfPresent(DPIEngine.self, forKey: .dpiEngine)
+        testHosts = try c.decodeIfPresent(String.self, forKey: .testHosts) ?? ""
     }
 }
 
@@ -210,22 +220,29 @@ public struct Profile: Codable, Identifiable, Hashable, Sendable {
     public var hideUnreachableServers = true
     /// Send Russian and LAN destinations direct, bypassing the VPN (done inside Xray via geosite/geoip).
     public var routeLocalDirect = false
-    /// DPI bypass (tpws) on direct routes.
+    /// DPI bypass on: the installed cores run, `.directDPI` rules go through them.
     public var bypassEnabled = false
-    /// Which DPI-bypass core desyncs the traffic (tpws or ByeDPI).
+    /// The primary DPI core: used for `bypassAllDirect` and for `.directDPI` rules with no core set.
     public var dpiEngine: DPIEngine = .tpws
-    /// Index into the active engine's strategy list for the active desync strategy.
-    public var bypassStrategyIndex = 0
-    /// Hosts the DPI auto-tune probes (known-blocked sites), ";"-separated. Editable in Settings.
+    /// Strategy index per core; both cores run at once while bypass is on, each with its own.
+    public var tpwsStrategyIndex = 0
+    public var byedpiStrategyIndex = 0
+    /// Also send plain `.direct` traffic through the primary core while bypass is on. Off by default:
+    /// rules with action `.directDPI` are the one list of what gets bypassed.
+    public var bypassAllDirect = false
+    /// Hosts the DPI auto-tune probes besides the rules' own hosts, ";"-separated.
     public var dpiTestHosts = Profile.defaultDpiTestHosts
-    /// Apply DPI bypass only to known-blocked hosts (autohostlist) instead of all direct traffic.
-    /// With an empty `bypassHosts` it still applies to everything, so nothing silently stops working.
-    public var bypassAutohostlist = true
-    /// Hosts learned/known to need DPI bypass; matched as domain suffixes. Grown by the auto-tune.
-    public var bypassHosts: [String] = []
+    /// Set once the YouTube preset rule was offered, so a user who deletes it does not get it back.
+    public var youTubePresetOffered = false
 
-    /// The video host goes along with the page: a page that opens says nothing about video streams.
-    public static let defaultDpiTestHosts = "www.youtube.com; redirector.googlevideo.com; discord.com; rutracker.org; instagram.com"
+    public static let defaultDpiTestHosts = "discord.com; instagram.com; rutracker.org"
+    /// The default of earlier builds; a profile still holding it gets the new default.
+    static let legacyDpiTestHosts = "www.youtube.com; redirector.googlevideo.com; discord.com; rutracker.org; instagram.com"
+
+    /// Keys of earlier builds, read only to migrate. The learned host list itself is dropped.
+    private enum LegacyKeys: String, CodingKey {
+        case bypassStrategyIndex, bypassAutohostlist, bypassHosts
+    }
 
     public init(name: String, rules: [Rule]) {
         self.name = name
@@ -253,10 +270,83 @@ public struct Profile: Codable, Identifiable, Hashable, Sendable {
         routeLocalDirect = try c.decodeIfPresent(Bool.self, forKey: .routeLocalDirect) ?? false
         bypassEnabled = try c.decodeIfPresent(Bool.self, forKey: .bypassEnabled) ?? false
         dpiEngine = try c.decodeIfPresent(DPIEngine.self, forKey: .dpiEngine) ?? .tpws
-        bypassStrategyIndex = try c.decodeIfPresent(Int.self, forKey: .bypassStrategyIndex) ?? 0
-        dpiTestHosts = try c.decodeIfPresent(String.self, forKey: .dpiTestHosts) ?? Profile.defaultDpiTestHosts
-        bypassAutohostlist = try c.decodeIfPresent(Bool.self, forKey: .bypassAutohostlist) ?? true
-        bypassHosts = try c.decodeIfPresent([String].self, forKey: .bypassHosts) ?? []
+        let tpwsIndex = try c.decodeIfPresent(Int.self, forKey: .tpwsStrategyIndex)
+        let byedpiIndex = try c.decodeIfPresent(Int.self, forKey: .byedpiStrategyIndex)
+        tpwsStrategyIndex = tpwsIndex ?? 0
+        byedpiStrategyIndex = byedpiIndex ?? 0
+        if tpwsIndex == nil, byedpiIndex == nil {
+            // One index for the one engine of earlier builds: it belongs to the engine it was set for.
+            let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+            if let old = try? legacy.decodeIfPresent(Int.self, forKey: .bypassStrategyIndex) {
+                setStrategyIndex(old, for: dpiEngine)
+            }
+        }
+        if let allDirect = try c.decodeIfPresent(Bool.self, forKey: .bypassAllDirect) {
+            bypassAllDirect = allDirect
+        } else {
+            // Earlier builds bypassed all direct traffic unless a learned list narrowed it. Keep that
+            // for such profiles; a non-empty learned list now maps to rules, so it starts off.
+            let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+            let autohostlist = try? legacy.decodeIfPresent(Bool.self, forKey: .bypassAutohostlist)
+            let learned = (try? legacy.decodeIfPresent([String].self, forKey: .bypassHosts)) ?? nil
+            if let autohostlist {
+                bypassAllDirect = !autohostlist || (learned ?? []).isEmpty
+            } else {
+                bypassAllDirect = false
+            }
+        }
+        let testHosts = try c.decodeIfPresent(String.self, forKey: .dpiTestHosts) ?? Profile.defaultDpiTestHosts
+        dpiTestHosts = testHosts == Profile.legacyDpiTestHosts ? Profile.defaultDpiTestHosts : testHosts
+        youTubePresetOffered = try c.decodeIfPresent(Bool.self, forKey: .youTubePresetOffered) ?? false
+    }
+
+    /// Strategy index of `engine`, clamped to its list.
+    public func strategyIndex(for engine: DPIEngine) -> Int {
+        let raw = engine == .byedpi ? byedpiStrategyIndex : tpwsStrategyIndex
+        return engine.strategies().indices.contains(raw) ? raw : 0
+    }
+
+    public mutating func setStrategyIndex(_ index: Int, for engine: DPIEngine) {
+        let clamped = engine.strategies().indices.contains(index) ? index : 0
+        switch engine {
+        case .tpws: tpwsStrategyIndex = clamped
+        case .byedpi: byedpiStrategyIndex = clamped
+        }
+    }
+
+    /// Flags of `engine`'s chosen strategy.
+    public func strategyFlags(for engine: DPIEngine) -> [String] {
+        engine.strategies()[strategyIndex(for: engine)].flags
+    }
+
+    // MARK: - YouTube preset
+
+    public static let youTubeTargets = "geosite:youtube; *.youtube.com; youtu.be; *.googlevideo.com; *.ytimg.com; *.ggpht.com"
+    /// The page and a video host: a page that opens says nothing about video streams.
+    public static let youTubeTestHosts = "www.youtube.com; redirector.googlevideo.com"
+
+    /// "YouTube" through the DPI bypass. Off by default, so it does nothing until the user turns it on.
+    public static func youTubePreset(enabled: Bool = false) -> Rule {
+        var rule = Rule(name: "YouTube", targetHosts: youTubeTargets, action: .directDPI, testHosts: youTubeTestHosts)
+        rule.enabled = enabled
+        return rule
+    }
+
+    /// A rule already targets YouTube (by its geosite category or its main domain).
+    public var hasYouTubeRule: Bool {
+        rules.contains { rule in
+            splitList(rule.targetHosts).contains { ["geosite:youtube", "*.youtube.com"].contains($0.lowercased()) }
+        }
+    }
+
+    /// Adds the YouTube preset at the top of an existing profile, once in its lifetime. Returns true
+    /// when the profile changed.
+    @discardableResult
+    public mutating func offerYouTubePreset() -> Bool {
+        guard !youTubePresetOffered else { return false }
+        youTubePresetOffered = true
+        if !hasYouTubeRule { rules.insert(Profile.youTubePreset(), at: 0) }
+        return true
     }
 
     public var activeSubscription: Subscription? {
@@ -275,11 +365,14 @@ public struct Profile: Codable, Identifiable, Hashable, Sendable {
     }
 
     public static func makeDefault(name: String = "Default") -> Profile {
-        Profile(name: name, rules: [
+        var profile = Profile(name: name, rules: [
+            Profile.youTubePreset(),
             Rule(name: "Local networks — direct", targetHosts: "localhost; 127.0.0.1; ::1; %ComputerName%; 10.0.0.0/8; 172.16.0.0/12; 192.168.0.0/16", action: .direct, locked: true),
             Rule(name: "Docker", applications: "Docker Desktop; com.docker.backend", targetHosts: "*.docker.com; *.docker.io", action: .direct),
             Rule(name: "Default", action: .global, isDefault: true),
         ])
+        profile.youTubePresetOffered = true
+        return profile
     }
 
     public func proxy(_ id: UUID) -> ProxyServer? { proxies.first { $0.id == id } }

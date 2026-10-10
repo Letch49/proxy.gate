@@ -190,7 +190,7 @@ struct Sidebar: View {
         case .vpn where model.vpnConnected:
             activeDot(Theme.on)
         case .dpi where model.bypassEnabled:
-            activeDot(model.tpwsRunning ? Theme.on : Theme.warnFg)
+            activeDot(model.anyDPICoreRunning ? Theme.on : Theme.warnFg)
         case .anyconnect where model.anyConnectUp:
             activeDot(Theme.on)
         case .mcp where model.mcpEnabled:

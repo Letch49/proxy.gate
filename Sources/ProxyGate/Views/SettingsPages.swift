@@ -88,15 +88,6 @@ struct SettingsPage: View {
                         .font(.caption)
                         .foregroundStyle(Theme.text3)
                 }
-                Section {
-                    TextField("", text: $model.profile.dpiTestHosts, prompt: Text("youtube.com; discord.com"), axis: .vertical)
-                        .lineLimit(1...3).font(Theme.mono)
-                } header: {
-                    Text("Auto-tune test sites")
-                } footer: {
-                    Text("Known-blocked hosts the DPI auto-tune probes. During the test they always go direct.")
-                        .font(.caption).foregroundStyle(Theme.text3)
-                }
                 Section("Privileged helper") {
                     LabeledContent("Status") {
                         if !model.helperInstalled {

@@ -44,7 +44,7 @@ final class Engine: @unchecked Sendable {
     private var vpnRunning = false
     private var tpwsRunning = false
     private var byedpiRunning = false
-    /// Route `.direct` connections through tpws for DPI bypass.
+    /// DPI bypass is on; with the profile's `bypassAllDirect`, `.direct` routes go through the primary core.
     private var bypassDirect = false
     /// Egress that `.global` rules resolve to, set by the app from the current network.
     private var activeBridge: Bridge = .direct
@@ -141,9 +141,10 @@ final class Engine: @unchecked Sendable {
         lock.withLock { bypassDirect = on }
     }
 
-    /// Diagnoses the test hosts and tries the installed cores' strategies on the blocked ones (see
-    /// BypassTuner). Emits progress and one final report; a second request while running is ignored.
-    func tuneBypass(hosts requested: [String]) {
+    /// Diagnoses the test hosts and each `.directDPI` rule's hosts, and tries every installed core's
+    /// strategies on the blocked ones (see BypassTuner). Emits progress and one final report; a
+    /// second request while running is ignored.
+    func tuneBypass(hosts requested: [String], rules requestedRules: [TuneRuleInput]) {
         let started = lock.withLock { () -> Bool in
             if tuneRunning { return false }
             tuneRunning = true
@@ -154,17 +155,15 @@ final class Engine: @unchecked Sendable {
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             let cfg = self.lock.withLock { self.profile }
-            // Socket input: only well-formed names, a bounded number of them.
-            var hosts = requested.map { $0.lowercased() }.filter { DNSName.isValid($0) && IPAddr($0) == nil }
-            if hosts.isEmpty { hosts = ["www.youtube.com", "redirector.googlevideo.com"] }
-            hosts = Array(NSOrderedSet(array: hosts).array.compactMap { $0 as? String }.prefix(BypassTuner.maxHosts))
+            // Socket input: only well-formed names, bounded counts.
+            let (hosts, rules) = TuneHosts.sanitize(general: requested, rules: requestedRules)
             var installed: Set<DPIEngine> = []
             if self.tpws.installedVersion != nil { installed.insert(.tpws) }
             if self.byedpi.installedVersion != nil { installed.insert(.byedpi) }
             let upstream = cfg.dns.upstream.provider.isValid ? cfg.dns.upstream : DNSUpstream(provider: DNSProviders.builtIn[0], transport: .doh)
-            self.log(.info, "DPI auto-tune started on: \(hosts.joined(separator: ", "))")
+            self.log(.info, "DPI auto-tune started on: \(hosts.joined(separator: ", ")) and \(rules.count) rule(s)")
             let tuner = BypassTuner(
-                hosts: hosts, upstream: upstream, allowIPv6: cfg.advanced.captureIPv6,
+                hosts: hosts, rules: rules, upstream: upstream, allowIPv6: cfg.advanced.captureIPv6,
                 engines: TunePlan.engines(active: cfg.dpiEngine, installed: installed),
                 dryRun: { [tpws = self.tpws] engine, flags in engine == .tpws ? tpws.dryRun(flags) : nil },
                 isCancelled: { [weak self] in self?.lock.withLock { self?.tuneCancelled ?? true } ?? true },
@@ -172,12 +171,11 @@ final class Engine: @unchecked Sendable {
                 log: { [weak self] text in self?.log(.info, text) })
             let report = tuner.run()
             self.lock.withLock { self.tuneRunning = false }
-            switch report.verdict {
-            case .found:
-                let label = report.engine.map { e in e.strategies().indices.contains(report.strategyIndex) ? e.strategies()[report.strategyIndex].label : "" } ?? ""
-                self.log(.info, "DPI auto-tune: selected \(report.engine?.title ?? "") \(label)")
-            case let verdict:
-                self.log(.warning, "DPI auto-tune: no strategy selected (\(verdict))")
+            let picked = DPIEngine.allCases.compactMap { e in report.chosenStrategy(for: e).map { "\(e.title) \(e.strategyLabel($0))" } }
+            if picked.isEmpty {
+                self.log(.warning, "DPI auto-tune: no strategy selected (\(report.verdict))")
+            } else {
+                self.log(.info, "DPI auto-tune: selected \(picked.joined(separator: ", "))")
             }
             self.emit(.bypassTuned(report))
         }
@@ -528,15 +526,6 @@ final class Engine: @unchecked Sendable {
 
     // MARK: - Connection handling
 
-    /// Whether a direct connection to `host` should go through the DPI core. With autohostlist off,
-    /// all direct traffic does; with it on, only the learned blocked hosts (an empty list still means
-    /// all, so turning it on before anything is learned does not silently stop the bypass).
-    private func bypassApplies(_ cfg: Profile, host: String?) -> Bool {
-        guard cfg.bypassAutohostlist else { return true }
-        let list = DPIBypassList(cfg.bypassHosts)
-        return list.isEmpty || list.matches(host)
-    }
-
     private func handle(_ cfd: Int32) {
         let client = TCPStream(fd: cfd)
         client.setBlocking()
@@ -569,11 +558,12 @@ final class Engine: @unchecked Sendable {
         let bound = cfg.proxies.contains { $0.interfaceMAC != nil }
         let unavailable = bound ? cfg.unavailableRoutes(active: NetInterfaces.active()) : []
         let (bridge, vpnUp, bypass, tpwsUp, byedpiUp) = lock.withLock { (activeBridge, vpnRunning, bypassDirect, tpwsRunning, byedpiRunning) }
-        // The active DPI core (tpws or ByeDPI) and its SOCKS port, per the profile's engine choice.
-        let dpiUp = cfg.dpiEngine == .byedpi ? byedpiUp : tpwsUp
-        let dpiPort = cfg.dpiEngine == .byedpi ? PGConstants.byedpiSocksPort : PGConstants.tpwsSocksPort
+        // Both cores may run at once, each with its own strategy.
+        var dpiRunning: Set<DPIEngine> = []
+        if tpwsUp { dpiRunning.insert(.tpws) }
+        if byedpiUp { dpiRunning.insert(.byedpi) }
         var rule = ruleSet.match(MatchRequest(app: app, hostname: hostname, ip: dst.ip, port: dst.port),
-                                 activeBridge: bridge, vpnAvailable: vpnUp, dpiAvailable: dpiUp,
+                                 activeBridge: bridge, vpnAvailable: vpnUp, dpiAvailable: !dpiRunning.isEmpty,
                                  unavailable: unavailable, geoDB: geo)
         if proxyIPs.contains(dst.ip) {
             rule = Rule(name: "Proxy server", action: .direct)
@@ -610,11 +600,11 @@ final class Engine: @unchecked Sendable {
                 client.abort()
                 return
             case .direct:
-                if bypass && dpiUp && !dst.ip.isPrivate && bypassApplies(cfg, host: hostname) {
-                    // DPI bypass: hand the direct connection to the active DPI core, which desyncs the
-                    // ClientHello. Private/LAN destinations never need it, so they stay a plain direct
-                    // connection. Autohostlist, when on, narrows this to the learned blocked hosts.
-                    let t = ProxyServer(host: "127.0.0.1", port: dpiPort, type: .socks5)
+                // "All direct traffic" mode: plain direct routes go through the primary core too.
+                // Private/LAN destinations never need it, so they stay a plain direct connection.
+                if let core = DPIRouting.directCore(bypassOn: bypass, allDirect: cfg.bypassAllDirect, primary: cfg.dpiEngine,
+                                                    running: dpiRunning, privateDestination: dst.ip.isPrivate) {
+                    let t = ProxyServer(host: "127.0.0.1", port: core.socksPort, type: .socks5)
                     (upstream, leftover) = try ProxyClient.connect(through: [t], to: dpiTarget, timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
                 } else {
                     upstream = try TCPStream.connect(to: [dst], timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
@@ -643,9 +633,13 @@ final class Engine: @unchecked Sendable {
                 let vpn = ProxyServer(host: "127.0.0.1", port: PGConstants.vpnSocksPort, type: .socks5)
                 (upstream, leftover) = try ProxyClient.connect(through: [vpn], to: proxyTarget, timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
             case .directDPI:
-                // Per-rule DPI bypass: route through the active DPI core (resolved only when up).
-                let t = ProxyServer(host: "127.0.0.1", port: dpiPort, type: .socks5)
-                (upstream, leftover) = try ProxyClient.connect(through: [t], to: dpiTarget, timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
+                // Per-rule DPI bypass: the rule's core (or the primary), else the other running one.
+                if let core = DPIRouting.ruleCore(rule.dpiEngine, primary: cfg.dpiEngine, running: dpiRunning) {
+                    let t = ProxyServer(host: "127.0.0.1", port: core.socksPort, type: .socks5)
+                    (upstream, leftover) = try ProxyClient.connect(through: [t], to: dpiTarget, timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
+                } else {
+                    upstream = try TCPStream.connect(to: [dst], timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
+                }
             case .global:
                 // Resolved away in RuleSet.match; reached only if the bridge was unset — go direct.
                 upstream = try TCPStream.connect(to: [dst], timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)

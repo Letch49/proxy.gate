@@ -89,6 +89,13 @@ extension AppModel {
     *.discordapp.com' action='vpn'. A blocked site via DPI bypass: action='dpi'. A corporate subnet \
     via a proxy: targetHosts='10.0.0.0/8' action='proxy:<id>'. New rules go just above Default; \
     reorder with move_rule since earlier rules win.
+
+    DPI rules (action='dpi') take two optional fields. dpiEngine: 'tpws' or 'byedpi' picks the \
+    bypass core for that rule; omit it (or pass '') to use the primary core. If the chosen core is \
+    not running, another running core is used; with none, the rule goes plain direct. testHosts: \
+    ';'-separated host names the DPI auto-tune probes for this rule, e.g. 'www.youtube.com'; empty \
+    means they are taken from targetHosts (geosite/geoip, IPs and ranges are skipped, '*.x.com' \
+    becomes 'x.com'). Rules with other actions ignore both fields.
     """
 
     // MARK: - Tool catalogue
@@ -102,6 +109,10 @@ extension AppModel {
             + "IP, IP mask ('10.*'), range ('10.0.0.0-10.0.1.255'), CIDR ('10.0.0.0/8'), "
             + "geosite:<category>, geoip:<country>, 'localhost', '%ComputerName%'. Empty = any."
         let hostsField: [String: Any] = ["type": "string", "description": hostsDesc]
+        let dpiEngineField: [String: Any] = ["type": "string", "enum": ["tpws", "byedpi", ""],
+                                             "description": "Only for action 'dpi': the bypass core for this rule. Empty or omitted = the primary core."]
+        let testHostsField: [String: Any] = ["type": "string",
+                                             "description": "Only for action 'dpi': ';'-separated host names the auto-tune probes for this rule. Empty = taken from targetHosts."]
         let str: [String: Any] = ["type": "string"]
         return [
             ["name": "list_rules",
@@ -118,6 +129,8 @@ extension AppModel {
                 "applications": ["type": "string", "description": "';'-separated app names/paths/bundle ids, with '*'/'?'. Empty = any."],
                 "targetHosts": hostsField,
                 "targetPorts": ["type": "string", "description": "';'-separated ports or 'lo-hi' ranges, e.g. '443; 8000-9000'. Empty = any."],
+                "dpiEngine": dpiEngineField,
+                "testHosts": testHostsField,
                 "position": ["type": "string", "description": "'top', 'bottom' (default, just above Default), or a 0-based index."],
              ], required: ["name", "action"])],
             ["name": "update_rule",
@@ -126,6 +139,7 @@ extension AppModel {
                 "id": ["type": "string", "description": "Rule id (uuid) or its 0-based index."],
                 "name": str, "action": ["type": "string", "description": actionDesc],
                 "applications": str, "targetHosts": hostsField, "targetPorts": str,
+                "dpiEngine": dpiEngineField, "testHosts": testHostsField,
                 "enabled": ["type": "boolean"],
              ], required: ["id"])],
             ["name": "delete_rule",
@@ -177,12 +191,17 @@ extension AppModel {
     }
 
     private func mcpRuleJSON(_ r: Rule, index: Int) -> [String: Any] {
-        [
+        var json: [String: Any] = [
             "index": index, "id": r.id.uuidString, "name": r.name, "enabled": r.enabled,
             "applications": r.applications, "targetHosts": r.targetHosts, "targetPorts": r.targetPorts,
             "action": mcpActionString(r.action), "actionLabel": profile.describe(r.action),
             "default": r.isDefault, "locked": r.locked, "dynamic": r.dynamic,
         ]
+        if r.action == .directDPI {
+            if let e = r.dpiEngine { json["dpiEngine"] = e.rawValue }
+            json["testHosts"] = r.testHosts
+        }
+        return json
     }
 
     private func mcpTargetsPayload() -> [String: Any] {
@@ -191,7 +210,9 @@ extension AppModel {
             "chains": profile.chains.map { ["id": $0.id.uuidString, "name": $0.name] },
             "symbolicActions": ["direct", "block", "global", "vpn", "dpi"],
             "vpnAvailable": xrayVersion != nil && !profile.subscriptions.isEmpty,
-            "dpiAvailable": dpiCoreInstalled,
+            "dpiAvailable": anyDPICoreInstalled,
+            "dpiEngines": installedDPIEngines.map(\.rawValue),
+            "primaryDpiEngine": primaryDPIEngine.rawValue,
             "geoAvailable": xrayVersion != nil,   // geosite.dat/geoip.dat ship with the VPN core
         ]
     }
@@ -229,7 +250,7 @@ extension AppModel {
             "redirectionOn": isRunning, "engineConnected": engineConnected, "helperInstalled": helperInstalled,
             "activeBridge": bridgeDescription,
             "vpnConnected": vpnConnected, "proxyConnected": proxyConnected,
-            "dpiBypassOn": bypassEnabled, "dpiCoreRunning": dpiCoreRunning,
+            "dpiBypassOn": bypassEnabled, "dpiCoreRunning": anyDPICoreRunning,
             "anyConnectUp": anyConnectUp,
         ]
     }
@@ -243,12 +264,20 @@ extension AppModel {
         guard let actionStr = args["action"] as? String, let action = mcpParseAction(actionStr) else {
             return ("invalid or missing action (call list_targets for valid ids)", true)
         }
+        var dpiEngine: DPIEngine?
+        if let raw = args["dpiEngine"] {
+            let parsed = mcpParseDPIEngine(raw)
+            guard parsed.valid else { return ("invalid dpiEngine (use 'tpws', 'byedpi' or '')", true) }
+            dpiEngine = parsed.engine
+        }
         var p = profile
         let rule = Rule(name: name,
                         applications: (args["applications"] as? String) ?? "",
                         targetHosts: (args["targetHosts"] as? String) ?? "",
                         targetPorts: (args["targetPorts"] as? String) ?? "",
-                        action: action)
+                        action: action,
+                        dpiEngine: dpiEngine,
+                        testHosts: (args["testHosts"] as? String) ?? "")
         let at = mcpInsertionIndex(in: p, position: args["position"])
         p.rules.insert(rule, at: at)
         profile = p
@@ -264,6 +293,12 @@ extension AppModel {
         if let v = args["targetHosts"] as? String { p.rules[idx].targetHosts = v }
         if let v = args["targetPorts"] as? String { p.rules[idx].targetPorts = v }
         if let v = args["enabled"] as? Bool, !p.rules[idx].isDefault { p.rules[idx].enabled = v }
+        if let v = args["testHosts"] as? String { p.rules[idx].testHosts = v }
+        if let raw = args["dpiEngine"] {
+            let parsed = mcpParseDPIEngine(raw)
+            guard parsed.valid else { return ("invalid dpiEngine (use 'tpws', 'byedpi' or '')", true) }
+            p.rules[idx].dpiEngine = parsed.engine
+        }
         if let s = args["action"] as? String {
             guard let a = mcpParseAction(s) else { return ("invalid action", true) }
             p.rules[idx].action = a
@@ -361,6 +396,16 @@ extension AppModel {
             if let c = profile.chains.first(where: { $0.name.caseInsensitiveCompare(v) == .orderedSame }) { return .chain(c.id) }
         }
         return nil
+    }
+
+    /// "tpws" / "byedpi" pick a core; "", "primary" or null mean the primary core (engine nil).
+    /// `valid` is false for anything else.
+    private func mcpParseDPIEngine(_ raw: Any) -> (valid: Bool, engine: DPIEngine?) {
+        if raw is NSNull { return (true, nil) }
+        guard let s = (raw as? String)?.trimmingCharacters(in: .whitespaces).lowercased() else { return (false, nil) }
+        if s.isEmpty || s == "primary" { return (true, nil) }
+        guard let e = DPIEngine(rawValue: s) else { return (false, nil) }
+        return (true, e)
     }
 
     private func dropPrefix(_ s: String, _ prefix: String) -> String? {

@@ -1,7 +1,7 @@
 import Foundation
 
 public enum PGConstants {
-    public static let version = "0.9.13"
+    public static let version = "0.9.14"
     /// Engine sends counters and the app refreshes live data at this interval (seconds).
     public static let statsInterval: Double = 2
     public static let helperLabel = "com.proxygate.engine"
@@ -221,7 +221,7 @@ public enum EngineMessage: Codable, Sendable {
     case status(EngineStatus)
     /// Latency in ms per config index (-1 = unreachable), for the given subscription.
     case pingResults(subscription: UUID, latencies: [Int: Int])
-    /// Auto-tune finished: the winning engine + strategy (if any) and the per-host diagnosis.
+    /// Auto-tune finished: the strategy per core, the per-rule picks and the per-host diagnosis.
     case bypassTuned(TuneReport)
     case tuneProgress(TuneProgress)
     /// Answer to `checkDNS`: how the system and the chosen provider resolve a name.
@@ -261,11 +261,12 @@ public enum ClientCommand: Codable, Sendable {
     case installByedpi(tarballPath: String, version: String)
     /// Run ByeDPI with these ciadpi flags, or nil to stop it.
     case byedpiStrategy([String]?)
-    /// Whether connections routed `.direct` should go through tpws (DPI bypass on).
+    /// DPI bypass on or off. With the profile's `bypassAllDirect`, `.direct` routes then go through
+    /// the primary core too; `.directDPI` rules use whichever core runs.
     case bypassDirect(Bool)
-    /// Resolve these known-blocked hosts, then try the DPI cores and strategies on them; replies
-    /// with tuneProgress and a final bypassTuned.
-    case tuneBypass(hosts: [String])
+    /// Resolve the general test hosts and each `.directDPI` rule's hosts, then try every installed
+    /// core's strategies on the blocked ones; replies with tuneProgress and a final bypassTuned.
+    case tuneBypass(hosts: [String], rules: [TuneRuleInput])
     case cancelTune
     /// Resolve `host` through the system and the profile's DNS provider; replies with dnsChecked.
     case checkDNS(host: String)

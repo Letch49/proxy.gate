@@ -110,8 +110,8 @@ final class ControlServer: @unchecked Sendable {
                 send(.status(engine.status))
             case .bypassDirect(let on):
                 engine.setBypassDirect(on)
-            case .tuneBypass(let hosts):
-                engine.tuneBypass(hosts: hosts)
+            case .tuneBypass(let hosts, let rules):
+                engine.tuneBypass(hosts: hosts, rules: rules)
             case .cancelTune:
                 engine.cancelTune()
             case .checkDNS(let host):

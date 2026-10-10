@@ -27,8 +27,10 @@ journal and stats.
 ## Tools
 
 Read: `list_rules`, `list_targets` (proxies, chains, symbolic actions, and the `vpnAvailable` /
-`dpiAvailable` / `geoAvailable` flags), `get_log`, `get_stats`, `get_status`.
-Write: `add_rule`, `update_rule`, `delete_rule`, `move_rule`.
+`dpiAvailable` / `geoAvailable` flags, `dpiEngines`, `primaryDpiEngine`), `get_log`, `get_stats`,
+`get_status`.
+Write: `add_rule`, `update_rule`, `delete_rule`, `move_rule`. For the dpi action a rule also takes
+`dpiEngine` (`tpws`, `byedpi`, or empty for the primary core) and `testHosts`.
 
 Scope is deliberate: read plus rules CRUD only. An agent cannot start redirection or change
 VPN/DPI/AnyConnect. Default, locked and dynamic rules are protected from edit, delete and move.

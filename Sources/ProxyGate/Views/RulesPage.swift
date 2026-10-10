@@ -32,10 +32,11 @@ struct RulesPage: View {
                     Label("Paste", systemImage: "doc.on.clipboard")
                 }
                 .buttonStyle(GhostButtonStyle())
-                if !model.hasRussianRule || !model.hasDockerRule {
+                if !model.hasRussianRule || !model.hasDockerRule || !model.hasYouTubeRule {
                     Menu {
                         if !model.hasRussianRule { Button("Russian / local sites → Direct") { model.addRussianDirectRule() } }
                         if !model.hasDockerRule { Button("Docker → Direct") { model.addDockerRule() } }
+                        if !model.hasYouTubeRule { Button("YouTube → Direct + DPI") { model.addYouTubeRule() } }
                     } label: {
                         Label("Presets", systemImage: "wand.and.stars")
                     }

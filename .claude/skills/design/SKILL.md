@@ -83,7 +83,11 @@ Code rules are in [swift-code], text rules in `.claude/rules/interface-text.md`.
   in `text3`; offer Stop when the work is long (auto-tune).
 - Switches: `.toggleStyle(.switch).controlSize(.mini).labelsHidden()` inside cards; plain
   `Toggle("label")` inside a card form block (DNS hostname detection) or a Form.
-- Chips that can be removed: see the autohostlist in `DPIPage` (`FlowLayout`, `hostChip*`, xmark).
+- Chips that can be removed: see the DPI check hosts in `DPIPage` (`FlowLayout`, `hostChip*`, xmark).
+- DPI page order: ToggleCard (bypass, "All direct traffic" under it), "Rules with bypass" (one row per
+  Direct + DPI rule with its tune result), "DPI check" (test-host chips, verdict, host table behind
+  "Details"), "Cores" (strategy + a "Manual" menu per installed core). Installs never live on the DPI
+  page: they are in Settings > Dependencies (`DependencyRow`: source link, state pill, one action, log).
 
 ## Composition rules
 

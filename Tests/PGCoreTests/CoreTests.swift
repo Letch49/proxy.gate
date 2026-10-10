@@ -99,18 +99,6 @@ private func app(_ name: String, bundle: String? = nil, bundles: [String] = []) 
     #expect(name("example.com", "1.2.3.4") == "glob")   // *.example.com also covers the bare host
 }
 
-@Test func dpiBypassListMatchesDomainAndSubdomains() throws {
-    let list = DPIBypassList(["youtube.com", "*.discord.gg", "  Rutracker.ORG "])
-    #expect(list.matches("youtube.com"))
-    #expect(list.matches("www.youtube.com"))          // subdomain of a bare entry
-    #expect(list.matches("a.b.discord.gg"))           // "*." entry
-    #expect(list.matches("rutracker.org"))            // trimmed + case-insensitive
-    #expect(!list.matches("notyoutube.com"))          // not a suffix boundary
-    #expect(!list.matches("discord.gg.evil.com"))
-    #expect(!list.matches(nil))
-    #expect(DPIBypassList([]).isEmpty)
-}
-
 @Test func byedpiFlagAllowlist() throws {
     #expect(!ByeDpiStrategies.valid(["-f1+s", "-t8"]))         // no fake packets in the macOS build
     #expect(!ByeDpiStrategies.valid(["-f-1", "-t5"]))
@@ -414,7 +402,7 @@ struct StubGeo: GeoMatching {
     // Into an empty profile: the proxy is created, without credentials.
     var target = Profile.makeDefault()
     let wrapped = text.enumerated().map { $0.offset % 40 == 39 ? "\($0.element)\n" : "\($0.element)" }.joined()
-    #expect(try RuleTransfer.importRules(wrapped, into: &target) == 3)  // Localhost + Docker + Work, not Default
+    #expect(try RuleTransfer.importRules(wrapped, into: &target) == 4)  // YouTube + Local + Docker + Work, not Default
     #expect(target.proxies.count == 1 && !target.proxies[0].useAuth)
     let work = target.rules.first { $0.name == "Work" }!
     #expect(work.action == .proxy(target.proxies[0].id))

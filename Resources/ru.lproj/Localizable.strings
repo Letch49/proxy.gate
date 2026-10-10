@@ -420,7 +420,6 @@
 "Defeats ISP DPI on direct routes (zapret/tpws). It never touches VPN or proxy traffic." = "Обманывает DPI провайдера на прямых соединениях (zapret/tpws). Трафик VPN и прокси не трогает.";
 "Install Core" = "Установить ядро";
 "Update Core" = "Обновить ядро";
-"The DPI-bypass core (tpws) is not installed yet." = "Ядро обхода DPI (tpws) ещё не установлено.";
 "Could not install the DPI-bypass core: %@" = "Не удалось установить ядро обхода DPI: %@";
 "DPI-bypass core %@ downloaded, installing" = "Ядро обхода DPI %@ загружено, устанавливается";
 "Install the DPI-bypass core first (DPI tab)." = "Сначала установите ядро обхода DPI (вкладка DPI).";
@@ -430,19 +429,10 @@
 "Running" = "Работает";
 "Starting…" = "Запускается…";
 "Off" = "Выключено";
-"VPN/proxy off — bypass applies to all traffic." = "VPN/прокси выключены — обход на всём трафике.";
-"VPN/proxy on — bypass applies only to Direct rules." = "VPN/прокси включены — обход только на правилах «Напрямую».";
 "If sites are still blocked, try another strategy — effectiveness depends on your ISP. Auto-tune (probing which one works) comes next." = "Если сайты всё ещё блокируются — попробуй другую стратегию, эффективность зависит от провайдера. Авто-подбор (проверка, какая работает) будет следующим.";
 "%@ update available: %@" = "Доступно обновление %@: %@";
 "⚡ Auto-tune" = "⚡ Авто-подбор";
-"ByeDPI is not installed yet." = "ByeDPI ещё не установлен.";
 "Could not install ByeDPI: %@" = "Не удалось установить ByeDPI: %@";
-"Split, disorder, OOB." = "Разрезание, disorder, OOB.";
-"Bypass only blocked hosts" = "Обход только заблокированных хостов";
-"Bypass applies to all direct traffic." = "Обход применяется ко всему прямому трафику.";
-"Learning. Until the list fills, bypass applies to all direct traffic. Run Auto-tune to seed it." = "Обучение. Пока список пуст, обход идёт на весь прямой трафик. Запусти «Авто-подбор», чтобы наполнить список.";
-"Bypass is applied only to these hosts." = "Обход применяется только к этим хостам.";
-"Clear list" = "Очистить список";
 "Remove from the list" = "Убрать из списка";
 "Russian / local sites" = "Российские / локальные сайты";
 "+ Russian direct" = "+ РФ напрямую";
@@ -487,8 +477,6 @@
 "AnyConnect concentrator" = "Концентратор AnyConnect";
 "AnyConnect routes" = "Маршруты AnyConnect";
 "Overridden by an earlier rule — inactive" = "Перекрыто более ранним правилом — неактивно";
-"Auto-tune test sites" = "Сайты для авто-подбора";
-"Known-blocked hosts the DPI auto-tune probes. During the test they always go direct." = "Заведомо заблокированные сайты для авто-подбора DPI. На время теста они всегда идут напрямую.";
 
 /* DNS provider, app DNS, auto-tune diagnosis */
 "Name lookup for blocked sites and hostname detection." = "Разрешение имён для заблокированных сайтов и распознавание имён хостов.";
@@ -520,10 +508,8 @@
 "Not found" = "Не найден";
 "No address" = "Нет адреса";
 "No answer" = "Нет ответа";
-"Auto-tune checks DNS first, then each strategy of the installed cores. Effectiveness depends on your ISP." = "Авто-подбор сначала проверяет DNS, затем каждую стратегию установленных ядер. Результат зависит от провайдера.";
 "Checking DNS…" = "Проверка DNS…";
 "Checking direct access…" = "Проверка прямого доступа…";
-"Split, disorder, OOB, TLS records. Another way to cut the request." = "Split, disorder, OOB, TLS-записи. Другой способ разрезать запрос.";
 "Apps can't resolve some of these sites." = "Приложения не могут разрешить часть этих сайтов.";
 "Resolve via %@" = "Разрешать через %@";
 "A page that opens doesn't prove video works. Check playback too." = "Открытая страница не гарантирует работу видео. Проверьте и воспроизведение.";
@@ -555,3 +541,24 @@
 "Cores download from their GitHub releases, and the helper checks each file's SHA-256 before installing it. openconnect comes from Homebrew, which checks its own packages." = "Ядра скачиваются из релизов на GitHub, хелпер сверяет SHA-256 каждого файла перед установкой. openconnect ставится из Homebrew, он сам проверяет свои пакеты.";
 
 "Core" = "Ядро";
+
+/* DPI page: rules, check, cores */
+"Defeats ISP DPI on direct routes. It never touches VPN or proxy traffic." = "Обманывает DPI провайдера на прямых соединениях. Трафик VPN и прокси не трогает.";
+"All direct traffic" = "Весь прямой трафик";
+"Bypass for every Direct route, not only the rules below" = "Обход для всех прямых соединений, а не только для правил ниже";
+"No DPI core installed" = "Ядро DPI не установлено";
+"Rules with bypass" = "Правила с обходом";
+"Rule" = "Правило";
+"Add a Direct + DPI rule to bypass DPI for chosen sites." = "Добавьте правило «Напрямую + DPI», чтобы обходить DPI для выбранных сайтов.";
+"Rules come from the Rules page. Auto-tune checks each one." = "Правила берутся со страницы «Правила». Авто-подбор проверяет каждое.";
+"DPI check" = "Проверка DPI";
+"Sites to test. During the test they always go direct." = "Сайты для проверки. Во время теста они всегда идут напрямую.";
+"Details" = "Подробнее";
+"Cores" = "Ядра";
+"Install a DPI core in Settings." = "Установите ядро DPI в настройках.";
+"Manual" = "Вручную";
+"Pick a strategy by hand" = "Выбрать стратегию вручную";
+"Not tested" = "Не проверено";
+"No strategy" = "Нет стратегии";
+"OK · %lld ms" = "OK · %lld мс";
+"YouTube → Direct + DPI" = "YouTube → Напрямую + DPI";
