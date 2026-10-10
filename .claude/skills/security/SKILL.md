@@ -18,7 +18,9 @@ The engine runs as root. A fault here is a root exploit, so hold this line.
 
 - Launch external tools only through `Shell.run`. It closes pipe descriptors, so no fd leak.
 - Validate arguments to the cores against an allowlist before they reach a command line:
-  - tpws flags: `TpwsManager.validStrategy` (strict regex, reject anything else).
+  - tpws flags: `TpwsManager.validStrategy` (option-name allowlist of desync options plus a value
+    regex; no bind, user, hostlist, ipset or debug options).
+  - ByeDPI flags: `ByeDpiStrategies.valid` (desync letters only, no `-i/-p/-l/-H`, no `-f/-S`).
   - AnyConnect host and user: `isSafeServer` / `isSafeUser`, reject a leading `-`.
 - Put `--` before any operand that could look like a flag.
 
@@ -67,6 +69,13 @@ A security pass fixed these; keep them in place:
 - Rule, network and port parsing guards `first`/empty/bounds, so junk input cannot crash the engine.
 - Secret-bearing files and logs are mode 0600.
 - `Engine.start()` does the blocking pf/listen/subprocess work outside the lock.
+- DPI cores listen on 127.0.0.1 only (tpws gets `--bind-addr=127.0.0.1`; without it tpws is an
+  open SOCKS proxy on every interface).
+- `/etc/resolver` files: domain names pass `DNSDomainList.isAllowed` (no `/`, `..`, wildcards,
+  `local`, `arpa`), are written only by `SystemDNS`, never follow a symlink, and only files with our
+  marker are replaced or removed. DNS providers from the socket are re-checked (`DNSProvider.isValid`).
+- The DNS stub answers only the listed domains (REFUSED otherwise) and ignores replies whose id or
+  question do not match.
 
 ## Before you finish
 

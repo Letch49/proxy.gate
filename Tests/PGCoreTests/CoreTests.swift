@@ -99,6 +99,66 @@ private func app(_ name: String, bundle: String? = nil, bundles: [String] = []) 
     #expect(name("example.com", "1.2.3.4") == "glob")   // *.example.com also covers the bare host
 }
 
+@Test func dpiBypassListMatchesDomainAndSubdomains() throws {
+    let list = DPIBypassList(["youtube.com", "*.discord.gg", "  Rutracker.ORG "])
+    #expect(list.matches("youtube.com"))
+    #expect(list.matches("www.youtube.com"))          // subdomain of a bare entry
+    #expect(list.matches("a.b.discord.gg"))           // "*." entry
+    #expect(list.matches("rutracker.org"))            // trimmed + case-insensitive
+    #expect(!list.matches("notyoutube.com"))          // not a suffix boundary
+    #expect(!list.matches("discord.gg.evil.com"))
+    #expect(!list.matches(nil))
+    #expect(DPIBypassList([]).isEmpty)
+}
+
+@Test func byedpiFlagAllowlist() throws {
+    #expect(!ByeDpiStrategies.valid(["-f1+s", "-t8"]))         // no fake packets in the macOS build
+    #expect(!ByeDpiStrategies.valid(["-f-1", "-t5"]))
+    #expect(ByeDpiStrategies.valid(["-s0+sm"]))
+    #expect(ByeDpiStrategies.valid(["-s", "1", "-d", "3+s"]))   // separate value tokens
+    #expect(!ByeDpiStrategies.valid(["-i0.0.0.0"]))             // listen ip not allowed
+    #expect(!ByeDpiStrategies.valid(["-p", "8080"]))           // port not allowed
+    #expect(!ByeDpiStrategies.valid(["-l/etc/passwd"]))        // fake-data file not allowed
+    #expect(!ByeDpiStrategies.valid(["-H:evil"]))              // hostlist not allowed
+    #expect(!ByeDpiStrategies.valid(["-f1+s; rm -rf /"]))      // junk rejected
+    // Every shipped preset must pass its own allowlist.
+    for s in ByeDpiStrategies.all { #expect(ByeDpiStrategies.valid(s.flags)) }
+}
+
+@Test func vpncScriptLocate() throws {
+    // Homebrew openconnect 9.x path (etc/vpnc/) wins when present.
+    let present: Set<String> = ["/opt/homebrew/etc/vpnc/vpnc-script", "/opt/homebrew/etc/vpnc-script"]
+    #expect(VpncScript.locate(isExecutable: { present.contains($0) }) == "/opt/homebrew/etc/vpnc/vpnc-script")
+    // Falls back to the older flat path when only it is executable.
+    #expect(VpncScript.locate(isExecutable: { $0 == "/opt/homebrew/etc/vpnc-script" }) == "/opt/homebrew/etc/vpnc-script")
+    // Intel Homebrew subdir.
+    #expect(VpncScript.locate(isExecutable: { $0 == "/usr/local/etc/vpnc/vpnc-script" }) == "/usr/local/etc/vpnc/vpnc-script")
+    // Nothing executable -> nil, so the caller fails closed and does not start openconnect.
+    #expect(VpncScript.locate(isExecutable: { _ in false }) == nil)
+    // The default list covers both Homebrew 9.x layouts and keeps the legacy paths.
+    #expect(VpncScript.candidates.contains("/opt/homebrew/etc/vpnc/vpnc-script"))
+    #expect(VpncScript.candidates.contains("/usr/local/etc/vpnc/vpnc-script"))
+    #expect(VpncScript.candidates.contains("/etc/vpnc/vpnc-script"))
+}
+
+@Test func dnsSafeWrapperStripsDnsForEveryEvent() throws {
+    let body = VpncScript.dnsSafeWrapperBody(realScript: "/opt/homebrew/etc/vpnc/vpnc-script")
+    #expect(body.hasPrefix("#!/bin/sh"))
+    for v in ["INTERNAL_IP4_DNS", "INTERNAL_IP6_DNS", "CISCO_DEF_DOMAIN", "CISCO_SPLIT_DNS"] {
+        #expect(body.contains(v))
+    }
+    #expect(body.contains("unset INTERNAL_IP4_DNS INTERNAL_IP6_DNS CISCO_DEF_DOMAIN CISCO_SPLIT_DNS"))
+    #expect(body.contains("exec '/opt/homebrew/etc/vpnc/vpnc-script' \"$@\""))
+    // Unconditional: no branch on openconnect's reason, so connect/reconnect/attempt-reconnect/
+    // disconnect all strip DNS before the real script runs.
+    #expect(!body.contains("reason"))
+    #expect(!body.contains("if "))
+    #expect(!body.contains("case "))
+    // A single quote in the path is escaped so the shell sees the exact path.
+    let quoted = VpncScript.dnsSafeWrapperBody(realScript: "/tmp/a'b/vpnc-script")
+    #expect(quoted.contains("'/tmp/a'\\''b/vpnc-script'"))
+}
+
 struct StubGeo: GeoMatching {
     let ruDomains: Set<String>
     func matches(token: String, host: String?, ip: IPAddr) -> Bool {

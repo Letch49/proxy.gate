@@ -2,41 +2,6 @@ import AppKit
 import PGCore
 import SwiftUI
 
-struct DNSPage: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        @Bindable var model = model
-        VStack(alignment: .leading, spacing: 8) {
-            PageHeader(title: "DNS", subtitle: "How ProxyGate learns hostnames behind IP addresses.") { EmptyView() }
-                .padding(.horizontal, 24)
-                .padding(.top, 18)
-            Form {
-                Section {
-                    Toggle("Detect target hostnames (TLS SNI / HTTP Host header)", isOn: $model.profile.dns.sniffHostnames)
-                    Stepper(value: $model.profile.dns.sniffTimeoutMs, in: 50...2000, step: 50) {
-                        Text("Wait for the client's first bytes: \(model.profile.dns.sniffTimeoutMs) ms")
-                    }
-                    .disabled(!model.profile.dns.sniffHostnames)
-                } footer: {
-                    Text("Applications resolve names themselves, so ProxyGate only sees IP addresses. It reads the hostname from the TLS ClientHello or HTTP request, so rules like *.example.com work and the connection list shows names. Protocols where the server speaks first (SSH, SMTP) wait for this timeout once.")
-                        .font(.caption)
-                        .foregroundStyle(Theme.text3)
-                }
-                Section {
-                    Toggle("Send hostnames to the proxy (resolve DNS through proxy)", isOn: $model.profile.dns.sendHostnameToProxy)
-                } footer: {
-                    Text("When a hostname was detected, the proxy receives the name instead of the IP address and resolves it itself. Recommended for corporate proxies.")
-                        .font(.caption)
-                        .foregroundStyle(Theme.text3)
-                }
-            }
-            .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-        }
-    }
-}
-
 struct SettingsPage: View {
     @Environment(AppModel.self) private var model
 

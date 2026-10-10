@@ -48,8 +48,34 @@ while let arg = args.next() {
         site("private", "localhost")
         ipt("ru", "5.255.255.242"); ipt("ru", "8.8.8.8"); ipt("private", "192.168.1.1")
         exit(0)
+    case "--dns-test":
+        // Resolves a name through the system and every built-in provider, both transports. Read-only.
+        let name = args.next() ?? "www.youtube.com"
+        print("system: \(DNSClient.systemLookup(name, timeoutMs: 4000))")
+        for p in DNSProviders.builtIn {
+            for t in DNSTransport.allCases where t == .udp || p.supportsDoH {
+                let u = DNSUpstream(provider: p, transport: t)
+                print("\(u.title): \(DNSClient.lookup(name, upstream: u, timeoutMs: 4000, bindPorts: PFRules.reservedPorts))")
+            }
+        }
+        exit(0)
+    case "--dns-stub":
+        // Runs only the DNS stub in the foreground for the given domains (no resolver files, no
+        // root needed), for checking it with `dig @127.0.0.1 -p 52153 <name>`.
+        var domains: [String] = []
+        while let d = args.next() { domains.append(d) }
+        let stub = DNSStub()
+        do {
+            try stub.start(.init(upstream: DNSSettings().upstream, domains: DNSDomainList.parse(domains.joined(separator: ";")).valid,
+                                 filterAAAA: false))
+        } catch {
+            print("\(error)")
+            exit(1)
+        }
+        print("DNS stub on 127.0.0.1:\(PGConstants.dnsStubPort) for \(domains)")
+        dispatchMain()
     default:
-        FileHandle.standardError.write(Data("usage: proxygate-engine [--socket PATH] [--allow-uid UID]... [--version] [--print-rules]\n".utf8))
+        FileHandle.standardError.write(Data("usage: proxygate-engine [--socket PATH] [--allow-uid UID]... [--version] [--print-rules] [--dns-test HOST]\n".utf8))
         exit(2)
     }
 }
@@ -59,8 +85,9 @@ guard getuid() == 0 else {
     exit(1)
 }
 
-// Leftovers from a crashed run would redirect traffic to nobody.
+// Leftovers from a crashed run would redirect traffic to nobody, or send names to a dead stub.
 PF.flushAnchor()
+SystemDNS.clear()
 
 let engine = Engine()
 let server = ControlServer(path: socketPath, allowedUIDs: allowedUIDs, engine: engine)
@@ -71,6 +98,7 @@ for sig in [SIGTERM, SIGINT, SIGHUP] {
     let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
     source.setEventHandler {
         engine.stop()
+        engine.releaseDNS()
         unlink(socketPath)
         exit(0)
     }

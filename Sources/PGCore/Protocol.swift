@@ -1,7 +1,7 @@
 import Foundation
 
 public enum PGConstants {
-    public static let version = "0.9.7"
+    public static let version = "0.9.12"
     /// Engine sends counters and the app refreshes live data at this interval (seconds).
     public static let statsInterval: Double = 2
     public static let helperLabel = "com.proxygate.engine"
@@ -29,6 +29,16 @@ public enum PGConstants {
     public static let tpwsPlistPath = "/Library/LaunchDaemons/com.proxygate.tpws.plist"
     public static let tpwsLogPath = "/var/log/proxygate-tpws.log"
     public static let tpwsSocksPort: UInt16 = 52150
+    // ByeDPI (ciadpi), the second DPI-bypass engine: another set of split/disorder/oob/tls-record
+    // desyncs. Its macOS build has no fake packets.
+    public static let byedpiPath = supportDir + "/ciadpi"
+    public static let byedpiVersionPath = supportDir + "/ciadpi.version"
+    public static let byedpiLabel = "com.proxygate.byedpi"
+    public static let byedpiPlistPath = "/Library/LaunchDaemons/com.proxygate.byedpi.plist"
+    public static let byedpiLogPath = "/var/log/proxygate-byedpi.log"
+    public static let byedpiSocksPort: UInt16 = 52160
+    /// Loopback UDP port of the engine's DNS stub; /etc/resolver files point the chosen domains here.
+    public static let dnsStubPort: UInt16 = 52153
 }
 
 public enum RouteKind: String, Codable, Sendable {
@@ -49,12 +59,19 @@ public struct EngineStatus: Codable, Sendable {
     public var tpwsVersion: String?
     public var tpwsRunning: Bool
     public var tpwsError: String?
+    /// Installed ByeDPI (ciadpi) core version, nil when not installed.
+    public var byedpiVersion: String?
+    public var byedpiRunning: Bool
+    public var byedpiError: String?
     public var anyConnect = AnyConnectState()
+    /// App-facing DNS: resolver files + local stub.
+    public var dns = SystemDNSState()
 
     public init(version: String, running: Bool, error: String?, listenPort: UInt16,
                 xrayVersion: String? = nil, xrayRunning: Bool = false, xrayError: String? = nil,
                 tpwsVersion: String? = nil, tpwsRunning: Bool = false, tpwsError: String? = nil,
-                anyConnect: AnyConnectState = AnyConnectState()) {
+                byedpiVersion: String? = nil, byedpiRunning: Bool = false, byedpiError: String? = nil,
+                anyConnect: AnyConnectState = AnyConnectState(), dns: SystemDNSState = SystemDNSState()) {
         self.version = version
         self.running = running
         self.error = error
@@ -65,7 +82,11 @@ public struct EngineStatus: Codable, Sendable {
         self.tpwsVersion = tpwsVersion
         self.tpwsRunning = tpwsRunning
         self.tpwsError = tpwsError
+        self.byedpiVersion = byedpiVersion
+        self.byedpiRunning = byedpiRunning
+        self.byedpiError = byedpiError
         self.anyConnect = anyConnect
+        self.dns = dns
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,7 +101,11 @@ public struct EngineStatus: Codable, Sendable {
         tpwsVersion = try c.decodeIfPresent(String.self, forKey: .tpwsVersion)
         tpwsRunning = try c.decodeIfPresent(Bool.self, forKey: .tpwsRunning) ?? false
         tpwsError = try c.decodeIfPresent(String.self, forKey: .tpwsError)
+        byedpiVersion = try c.decodeIfPresent(String.self, forKey: .byedpiVersion)
+        byedpiRunning = try c.decodeIfPresent(Bool.self, forKey: .byedpiRunning) ?? false
+        byedpiError = try c.decodeIfPresent(String.self, forKey: .byedpiError)
         anyConnect = try c.decodeIfPresent(AnyConnectState.self, forKey: .anyConnect) ?? AnyConnectState()
+        dns = try c.decodeIfPresent(SystemDNSState.self, forKey: .dns) ?? SystemDNSState()
     }
 }
 
@@ -196,8 +221,11 @@ public enum EngineMessage: Codable, Sendable {
     case status(EngineStatus)
     /// Latency in ms per config index (-1 = unreachable), for the given subscription.
     case pingResults(subscription: UUID, latencies: [Int: Int])
-    /// Auto-tune finished: index into DPIStrategies.all of the strategy that worked, or -1 if none.
-    case bypassTuned(index: Int)
+    /// Auto-tune finished: the winning engine + strategy (if any) and the per-host diagnosis.
+    case bypassTuned(TuneReport)
+    case tuneProgress(TuneProgress)
+    /// Answer to `checkDNS`: how the system and the chosen provider resolve a name.
+    case dnsChecked(DNSCheckReport)
     case opened(ConnInfo)
     case closed(ConnClosed)
     case failed(ConnFailed)
@@ -227,10 +255,18 @@ public enum ClientCommand: Codable, Sendable {
     case installTpws(path: String, version: String, sha256: String)
     /// Run tpws with these strategy flags (e.g. "--split-pos=1 --disorder"), or nil to stop it.
     case tpwsStrategy([String]?)
+    /// Install the ByeDPI (ciadpi) core the app downloaded and verified to `path`.
+    case installByedpi(path: String, version: String, sha256: String)
+    /// Run ByeDPI with these ciadpi flags, or nil to stop it.
+    case byedpiStrategy([String]?)
     /// Whether connections routed `.direct` should go through tpws (DPI bypass on).
     case bypassDirect(Bool)
-    /// Try each DPI strategy against these known-blocked hosts; reply with the first that works.
+    /// Resolve these known-blocked hosts, then try the DPI cores and strategies on them; replies
+    /// with tuneProgress and a final bypassTuned.
     case tuneBypass(hosts: [String])
+    case cancelTune
+    /// Resolve `host` through the system and the profile's DNS provider; replies with dnsChecked.
+    case checkDNS(host: String)
     /// Connect the AnyConnect tunnel (openconnect) to `server` as `user` (out-of-band 2FA approval).
     case anyConnectConnect(server: String, user: String, password: String)
     case anyConnectDisconnect

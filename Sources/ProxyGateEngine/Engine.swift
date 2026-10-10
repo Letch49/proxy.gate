@@ -27,6 +27,7 @@ final class Engine: @unchecked Sendable {
     private let hosts = HostVerifier()
     let xray = XrayManager()
     let tpws = TpwsManager()
+    let byedpi = ByeDpiManager()
     let anyConnect = AnyConnectManager()
     private let geo = GeoDB()
     private var anyConnectState = AnyConnectState()
@@ -36,15 +37,24 @@ final class Engine: @unchecked Sendable {
     private var localBypassCache: [String] = []
     /// Latest Xray config pushed by the app; re-applied after the core is (re)installed.
     private var xrayConfigJSON: String?
-    /// Latest tpws strategy; re-applied after the core is (re)installed.
+    /// Latest tpws / ByeDPI strategy; re-applied after the core is (re)installed.
     private var tpwsStrategy: [String]?
+    private var byedpiStrategy: [String]?
     /// Cached so rule matching doesn't shell out to launchctl per connection; refreshed on the ticker.
     private var vpnRunning = false
     private var tpwsRunning = false
+    private var byedpiRunning = false
     /// Route `.direct` connections through tpws for DPI bypass.
     private var bypassDirect = false
     /// Egress that `.global` rules resolve to, set by the app from the current network.
     private var activeBridge: Bridge = .direct
+    /// App-facing DNS: the stub config in effect and its reported state. Changed on `dnsQueue` only.
+    private let dnsStub = DNSStub()
+    private var dnsConfig: DNSStub.Config?
+    private var dnsState = SystemDNSState()
+    private let dnsQueue = DispatchQueue(label: "proxygate.dns")
+    private var tuneRunning = false
+    private var tuneCancelled = false
 
     /// Set by the control server.
     var emit: (EngineMessage) -> Void = { _ in }
@@ -52,11 +62,19 @@ final class Engine: @unchecked Sendable {
     var status: EngineStatus {
         // Use the cached running flags (refreshed on the ticker) — never shell out to launchctl per
         // status, which is built on every command and every state change.
-        lock.withLock {
-            EngineStatus(version: PGConstants.version, running: running, error: lastError, listenPort: listenPort,
-                         xrayVersion: xray.installedVersion, xrayRunning: vpnRunning, xrayError: xray.error,
-                         tpwsVersion: tpws.installedVersion, tpwsRunning: tpwsRunning, tpwsError: tpws.error,
-                         anyConnect: anyConnectState)
+        let counters = dnsStub.counters
+        return lock.withLock {
+            var dns = dnsState
+            if dns.active {
+                dns.answered = counters.answered
+                dns.failed = counters.failed
+                dns.lastError = dns.lastError ?? counters.error
+            }
+            return EngineStatus(version: PGConstants.version, running: running, error: lastError, listenPort: listenPort,
+                                xrayVersion: xray.installedVersion, xrayRunning: vpnRunning, xrayError: xray.error,
+                                tpwsVersion: tpws.installedVersion, tpwsRunning: tpwsRunning, tpwsError: tpws.error,
+                                byedpiVersion: byedpi.installedVersion, byedpiRunning: byedpiRunning, byedpiError: byedpi.error,
+                                anyConnect: anyConnectState, dns: dns)
         }
     }
 
@@ -102,39 +120,154 @@ final class Engine: @unchecked Sendable {
         if let err = tpws.error { log(.warning, err) }
     }
 
+    func installByedpi(path: String, version: String, sha256: String) {
+        do {
+            try byedpi.install(from: path, version: version, sha256: sha256)
+            log(.info, "ByeDPI \(version) installed")
+            if let strategy = lock.withLock({ byedpiStrategy }) { byedpi.apply(strategy: strategy) }
+        } catch {
+            log(.error, "ByeDPI install failed: \(error)")
+        }
+    }
+
+    func applyByedpi(strategy: [String]?) {
+        lock.withLock { byedpiStrategy = strategy }
+        let up = byedpi.apply(strategy: strategy)
+        lock.withLock { byedpiRunning = up }
+        if let err = byedpi.error { log(.warning, err) }
+    }
+
     func setBypassDirect(_ on: Bool) {
         lock.withLock { bypassDirect = on }
     }
 
-    /// Tries each strategy against known-blocked hosts; emits the first that works (or -1).
-    /// Logs each strategy and the hosts it was tested on, so the app's journal shows what ran and
-    /// what worked.
-    func tuneBypass(hosts: [String]) {
+    /// Diagnoses the test hosts and tries the installed cores' strategies on the blocked ones (see
+    /// BypassTuner). Emits progress and one final report; a second request while running is ignored.
+    func tuneBypass(hosts requested: [String]) {
+        let started = lock.withLock { () -> Bool in
+            if tuneRunning { return false }
+            tuneRunning = true
+            tuneCancelled = false
+            return true
+        }
+        guard started else { return }
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
-            let hosts = hosts.isEmpty ? ["www.youtube.com", "discord.com"] : hosts
+            let cfg = self.lock.withLock { self.profile }
+            // Socket input: only well-formed names, a bounded number of them.
+            var hosts = requested.map { $0.lowercased() }.filter { DNSName.isValid($0) && IPAddr($0) == nil }
+            if hosts.isEmpty { hosts = ["www.youtube.com", "redirector.googlevideo.com"] }
+            hosts = Array(NSOrderedSet(array: hosts).array.compactMap { $0 as? String }.prefix(BypassTuner.maxHosts))
+            var installed: Set<DPIEngine> = []
+            if self.tpws.installedVersion != nil { installed.insert(.tpws) }
+            if self.byedpi.installedVersion != nil { installed.insert(.byedpi) }
+            let upstream = cfg.dns.upstream.provider.isValid ? cfg.dns.upstream : DNSUpstream(provider: DNSProviders.builtIn[0], transport: .doh)
             self.log(.info, "DPI auto-tune started on: \(hosts.joined(separator: ", "))")
-            var winner = -1
-            for (index, strategy) in DPIStrategies.all.enumerated() {
-                var okHost: String?
-                var tried: [String] = []
-                for host in hosts {
-                    tried.append(host)
-                    if self.tpws.probe(flags: strategy.flags, host: host) { okHost = host; break }
-                }
-                if let okHost {
-                    self.log(.info, "DPI auto-tune: \(strategy.label) works on \(okHost)")
-                    winner = index
-                    break
-                }
-                self.log(.info, "DPI auto-tune: \(strategy.label) did not help (\(tried.joined(separator: ", ")))")
+            let tuner = BypassTuner(
+                hosts: hosts, upstream: upstream, allowIPv6: cfg.advanced.captureIPv6,
+                engines: TunePlan.engines(active: cfg.dpiEngine, installed: installed),
+                dryRun: { [tpws = self.tpws] engine, flags in engine == .tpws ? tpws.dryRun(flags) : nil },
+                isCancelled: { [weak self] in self?.lock.withLock { self?.tuneCancelled ?? true } ?? true },
+                progress: { [weak self] p in self?.emit(.tuneProgress(p)) },
+                log: { [weak self] text in self?.log(.info, text) })
+            let report = tuner.run()
+            self.lock.withLock { self.tuneRunning = false }
+            switch report.verdict {
+            case .found:
+                let label = report.engine.map { e in e.strategies().indices.contains(report.strategyIndex) ? e.strategies()[report.strategyIndex].label : "" } ?? ""
+                self.log(.info, "DPI auto-tune: selected \(report.engine?.title ?? "") \(label)")
+            case let verdict:
+                self.log(.warning, "DPI auto-tune: no strategy selected (\(verdict))")
             }
-            // Restore the user's running strategy (probes bounced the service around).
-            if let strategy = self.lock.withLock({ self.tpwsStrategy }) { self.tpws.apply(strategy: strategy) }
-            if winner < 0 {
-                self.log(.warning, "DPI auto-tune: no strategy worked on the tested hosts")
+            self.emit(.bypassTuned(report))
+        }
+    }
+
+    func cancelTune() {
+        lock.withLock { tuneCancelled = true }
+    }
+
+    /// How the system resolver and the profile's provider (both transports) see `host`.
+    func checkDNS(host: String) {
+        let name = host.lowercased().trimmingCharacters(in: .whitespaces)
+        guard DNSName.isValid(name), IPAddr(name) == nil else { return }
+        let cfg = lock.withLock { profile.dns }
+        guard cfg.provider.isValid else { return }
+        DispatchQueue.global().async { [weak self] in
+            var upstreams = [cfg.upstream]
+            if cfg.provider.supportsDoH {
+                upstreams.append(DNSUpstream(provider: cfg.provider, transport: cfg.upstream.transport == .doh ? .udp : .doh))
             }
-            self.emit(.bypassTuned(index: winner))
+            var checks: [DNSCheck] = Array(repeating: DNSCheck(source: "", system: false, outcome: DNSOutcome(status: .timeout), ms: nil),
+                                           count: upstreams.count + 1)
+            let lock = NSLock()
+            DispatchQueue.concurrentPerform(iterations: checks.count) { i in
+                let t = Date()
+                let check: DNSCheck
+                if i == 0 {
+                    let o = DNSClient.systemLookup(name, timeoutMs: 4000)
+                    check = DNSCheck(source: "System", system: true, outcome: o, ms: Int(Date().timeIntervalSince(t) * 1000))
+                } else {
+                    let u = upstreams[i - 1]
+                    let o = DNSClient.lookup(name, upstream: u, timeoutMs: 4000, bindPorts: PFRules.reservedPorts)
+                    check = DNSCheck(source: u.title, system: false, outcome: o, ms: Int(Date().timeIntervalSince(t) * 1000))
+                }
+                lock.withLock { checks[i] = check }
+            }
+            let plain = zip(upstreams, checks.dropFirst()).first { $0.0.transport == .udp }?.1.outcome
+            let doh = zip(upstreams, checks.dropFirst()).first { $0.0.transport == .doh }?.1.outcome
+            let differs = plain.flatMap { p in doh.map { DNSCheckReport.differs(p, $0) } } ?? false
+            self?.emit(.dnsChecked(DNSCheckReport(host: name, checks: checks, plainDiffers: differs)))
+        }
+    }
+
+    // MARK: - App-facing DNS
+
+    /// Brings the resolver files and the stub in line with the profile. The provider and domains came
+    /// over the socket, so they are re-validated here before they reach a file name or the network.
+    private func applyDNS(_ p: Profile) {
+        var desired: DNSStub.Config?
+        if p.dns.resolveThroughProvider, p.dns.provider.isValid {
+            let domains = DNSDomainList.parse(p.dns.resolveDomains).valid
+            if !domains.isEmpty {
+                desired = DNSStub.Config(upstream: p.dns.upstream, domains: domains, filterAAAA: !p.advanced.captureIPv6)
+            }
+        }
+        dnsQueue.async { [weak self] in
+            guard let self, desired != self.lock.withLock({ self.dnsConfig }) else { return }
+            var state = SystemDNSState()
+            if let desired {
+                do {
+                    try self.dnsStub.start(desired)
+                    let r = SystemDNS.apply(domains: desired.domains, port: PGConstants.dnsStubPort)
+                    state.active = !r.applied.isEmpty
+                    state.domains = r.applied
+                    state.conflicts = r.conflicts
+                    state.upstream = desired.upstream.title
+                    state.lastError = r.error
+                    self.log(.info, "DNS: \(r.applied.count) domain(s) resolve through \(desired.upstream.title)")
+                } catch {
+                    // Fail closed: no stub, no resolver files, so names keep resolving as before.
+                    SystemDNS.clear()
+                    self.dnsStub.stop()
+                    state.lastError = "\(error)"
+                    self.log(.error, "DNS stub could not start: \(error)")
+                }
+            } else {
+                SystemDNS.clear()
+                self.dnsStub.stop()
+            }
+            self.lock.withLock { self.dnsConfig = desired; self.dnsState = state }
+            self.emit(.status(self.status))
+        }
+    }
+
+    /// Drops the resolver files and the stub (the app went away or the engine is exiting).
+    func releaseDNS() {
+        dnsQueue.sync {
+            SystemDNS.clear()
+            dnsStub.stop()
+            lock.withLock { dnsConfig = nil; dnsState = SystemDNSState() }
         }
     }
 
@@ -177,7 +310,8 @@ final class Engine: @unchecked Sendable {
                 if tick % 5 == 0 {
                     let xrayUp = self.xray.running
                     let tpwsUp = self.tpws.running
-                    self.lock.withLock { self.vpnRunning = xrayUp; self.tpwsRunning = tpwsUp }
+                    let byedpiUp = self.byedpi.running
+                    self.lock.withLock { self.vpnRunning = xrayUp; self.tpwsRunning = tpwsUp; self.byedpiRunning = byedpiUp }
                 }
             }
         }
@@ -213,6 +347,7 @@ final class Engine: @unchecked Sendable {
             refusedPorts.removeAll()
             return (running, changed)
         }
+        applyDNS(newProfile)
         let proxies = newProfile.proxies
         DispatchQueue.global().async { [weak self] in
             var ips: Set<IPAddr> = []
@@ -393,6 +528,15 @@ final class Engine: @unchecked Sendable {
 
     // MARK: - Connection handling
 
+    /// Whether a direct connection to `host` should go through the DPI core. With autohostlist off,
+    /// all direct traffic does; with it on, only the learned blocked hosts (an empty list still means
+    /// all, so turning it on before anything is learned does not silently stop the bypass).
+    private func bypassApplies(_ cfg: Profile, host: String?) -> Bool {
+        guard cfg.bypassAutohostlist else { return true }
+        let list = DPIBypassList(cfg.bypassHosts)
+        return list.isEmpty || list.matches(host)
+    }
+
     private func handle(_ cfd: Int32) {
         let client = TCPStream(fd: cfd)
         client.setBlocking()
@@ -424,9 +568,12 @@ final class Engine: @unchecked Sendable {
 
         let bound = cfg.proxies.contains { $0.interfaceMAC != nil }
         let unavailable = bound ? cfg.unavailableRoutes(active: NetInterfaces.active()) : []
-        let (bridge, vpnUp, bypass, tpwsUp) = lock.withLock { (activeBridge, vpnRunning, bypassDirect, tpwsRunning) }
+        let (bridge, vpnUp, bypass, tpwsUp, byedpiUp) = lock.withLock { (activeBridge, vpnRunning, bypassDirect, tpwsRunning, byedpiRunning) }
+        // The active DPI core (tpws or ByeDPI) and its SOCKS port, per the profile's engine choice.
+        let dpiUp = cfg.dpiEngine == .byedpi ? byedpiUp : tpwsUp
+        let dpiPort = cfg.dpiEngine == .byedpi ? PGConstants.byedpiSocksPort : PGConstants.tpwsSocksPort
         var rule = ruleSet.match(MatchRequest(app: app, hostname: hostname, ip: dst.ip, port: dst.port),
-                                 activeBridge: bridge, vpnAvailable: vpnUp, dpiAvailable: tpwsUp,
+                                 activeBridge: bridge, vpnAvailable: vpnUp, dpiAvailable: dpiUp,
                                  unavailable: unavailable, geoDB: geo)
         if proxyIPs.contains(dst.ip) {
             rule = Rule(name: "Proxy server", action: .direct)
@@ -450,6 +597,9 @@ final class Engine: @unchecked Sendable {
         // The name goes to the proxy only when it really belongs to the dialed IP.
         let trustedHost = hostname.flatMap { cfg.dns.sendHostnameToProxy && hosts.resolves($0, to: dst.ip) ? $0 : nil }
         let proxyTarget = ProxyTarget(host: trustedHost ?? dst.ip.description, port: dst.port)
+        // The DPI cores get the IP the app dialed, never a name: they would resolve it through the
+        // system DNS, which may be the very thing that is broken.
+        let dpiTarget = ProxyTarget(host: dst.ip.description, port: dst.port)
         timing.mark("dns")
         let upstream: TCPStream
         var leftover: [UInt8] = []
@@ -460,11 +610,12 @@ final class Engine: @unchecked Sendable {
                 client.abort()
                 return
             case .direct:
-                if bypass && tpwsUp && !dst.ip.isPrivate {
-                    // DPI bypass: hand the direct connection to tpws, which desyncs the ClientHello.
-                    // Private/LAN destinations never need it, so they stay a plain direct connection.
-                    let t = ProxyServer(host: "127.0.0.1", port: PGConstants.tpwsSocksPort, type: .socks5)
-                    (upstream, leftover) = try ProxyClient.connect(through: [t], to: proxyTarget, timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
+                if bypass && dpiUp && !dst.ip.isPrivate && bypassApplies(cfg, host: hostname) {
+                    // DPI bypass: hand the direct connection to the active DPI core, which desyncs the
+                    // ClientHello. Private/LAN destinations never need it, so they stay a plain direct
+                    // connection. Autohostlist, when on, narrows this to the learned blocked hosts.
+                    let t = ProxyServer(host: "127.0.0.1", port: dpiPort, type: .socks5)
+                    (upstream, leftover) = try ProxyClient.connect(through: [t], to: dpiTarget, timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
                 } else {
                     upstream = try TCPStream.connect(to: [dst], timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
                 }
@@ -492,9 +643,9 @@ final class Engine: @unchecked Sendable {
                 let vpn = ProxyServer(host: "127.0.0.1", port: PGConstants.vpnSocksPort, type: .socks5)
                 (upstream, leftover) = try ProxyClient.connect(through: [vpn], to: proxyTarget, timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
             case .directDPI:
-                // Per-rule DPI bypass: route this connection through tpws (resolved only when it's up).
-                let t = ProxyServer(host: "127.0.0.1", port: PGConstants.tpwsSocksPort, type: .socks5)
-                (upstream, leftover) = try ProxyClient.connect(through: [t], to: proxyTarget, timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
+                // Per-rule DPI bypass: route through the active DPI core (resolved only when up).
+                let t = ProxyServer(host: "127.0.0.1", port: dpiPort, type: .socks5)
+                (upstream, leftover) = try ProxyClient.connect(through: [t], to: dpiTarget, timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)
             case .global:
                 // Resolved away in RuleSet.match; reached only if the bridge was unset — go direct.
                 upstream = try TCPStream.connect(to: [dst], timeoutMs: timeoutMs, bindPorts: PFRules.reservedPorts)

@@ -21,41 +21,42 @@ final class AnyConnectManager: @unchecked Sendable {
             .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    private static func vpncScript() -> String? {
-        ["/opt/homebrew/etc/vpnc-script", "/usr/local/etc/vpnc-script", "/etc/vpnc/vpnc-script"]
-            .first { FileManager.default.fileExists(atPath: $0) }
-    }
-
     /// The server pushes its own DNS resolvers and a search domain; the macOS vpnc-script writes them
     /// into the active network service. Those resolvers answer only from behind the tunnel, so once
     /// written they break all name resolution, including the route to the concentrator, and they
-    /// linger on the interface after a crash. We don't want system DNS touched, so we run the real
-    /// script through a wrapper that drops the DNS variables. Routes and the utun device are still set
-    /// up as usual. The wrapper is written root-owned into the support dir so only root can edit what
-    /// openconnect execs. Returns the real script path if the wrapper can't be written.
+    /// linger on the interface after sleep/wake or a crash. So we never let the script touch system
+    /// DNS: we exec the real script through a root-owned wrapper that strips the DNS variables for
+    /// every openconnect event. Routes and the utun device are set up as usual.
+    ///
+    /// Fail-closed: returns nil if no real script is found, or the wrapper cannot be written
+    /// root-owned and executable. The caller must NOT run openconnect without it (that would fall
+    /// back to the stock script and leak DNS onto the interface).
     private static func dnsSafeScript() -> String? {
-        guard let real = vpncScript() else { return nil }
+        guard let real = VpncScript.locate(isExecutable: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            return nil
+        }
         let path = supportDir + "/vpnc-nodns"
-        let quoted = "'" + real.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        let body = """
-        #!/bin/sh
-        # Do not let AnyConnect write its DNS onto the system interfaces.
-        unset INTERNAL_IP4_DNS INTERNAL_IP6_DNS CISCO_DEF_DOMAIN CISCO_SPLIT_DNS
-        exec \(quoted) "$@"
-
-        """
         do {
             try FileManager.default.createDirectory(atPath: supportDir, withIntermediateDirectories: true)
-            try body.write(toFile: path, atomically: true, encoding: .utf8)
-            _ = Shell.run("/usr/sbin/chown", ["root:wheel", path])
-            _ = Shell.run("/bin/chmod", ["755", path])
+            try VpncScript.dnsSafeWrapperBody(realScript: real).write(toFile: path, atomically: true, encoding: .utf8)
         } catch {
-            return real
+            return nil
+        }
+        // Root-owned and executable, or we don't trust it — openconnect execs this as root.
+        guard Shell.run("/usr/sbin/chown", ["root:wheel", path]).status == 0,
+              Shell.run("/bin/chmod", ["755", path]).status == 0,
+              FileManager.default.isExecutableFile(atPath: path) else {
+            try? FileManager.default.removeItem(atPath: path)
+            return nil
         }
         return path
     }
 
     private static let supportDir = PGConstants.supportDir
+
+    /// Shown in the UI when the DNS-safe wrapper can't be prepared. Fixed text so the app can
+    /// localize it (the app has matching ru/en entries).
+    static let dnsProtectionFailed = "Could not protect the system DNS, so AnyConnect did not start. Reinstall openconnect."
 
     /// host[:port] or https URL, no leading "-" (would be read as an option), no shell/space chars.
     static func isSafeServer(_ s: String) -> Bool {
@@ -82,6 +83,13 @@ final class AnyConnectManager: @unchecked Sendable {
             emit(.init(phase: .error, server: server, message: "invalid server or username"))
             return
         }
+        // The DNS-safe wrapper is mandatory: without it the stock vpnc-script writes the pushed DNS
+        // onto the interface and breaks name resolution after sleep/wake. If we can't prepare it, do
+        // not start the tunnel.
+        guard let script = Self.dnsSafeScript() else {
+            emit(.init(phase: .error, server: server, message: Self.dnsProtectionFailed))
+            return
+        }
         let host = URL(string: server)?.host ?? server.components(separatedBy: "/").first ?? server
         lock.withLock { serverHost = host }
         emit(.init(phase: .authenticating, server: server))
@@ -92,8 +100,7 @@ final class AnyConnectManager: @unchecked Sendable {
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
-        var args = ["--protocol=anyconnect", "--user=\(user)", "--passwd-on-stdin", "--non-inter"]
-        if let script = Self.dnsSafeScript() { args += ["--script", script] }
+        var args = ["--protocol=anyconnect", "--user=\(user)", "--passwd-on-stdin", "--non-inter", "--script", script]
         // "--" stops option parsing so the server can never be read as an option flag.
         args += ["--", server]
         p.arguments = args

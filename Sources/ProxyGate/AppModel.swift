@@ -451,7 +451,7 @@ final class AppModel {
         client.send(.xrayConfig(json))
     }
 
-    // MARK: - DPI bypass (tpws)
+    // MARK: - DPI bypass (tpws / ByeDPI)
 
     var tpwsVersion: String? { engineStatus?.tpwsVersion }
     var tpwsRunning: Bool { engineStatus?.tpwsRunning ?? false }
@@ -459,8 +459,32 @@ final class AppModel {
     var tpwsBusy = false
     var tpwsMessage: String?
 
+    var byedpiVersion: String? { engineStatus?.byedpiVersion }
+    var byedpiRunning: Bool { engineStatus?.byedpiRunning ?? false }
+    var byedpiError: String? { engineStatus?.byedpiError }
+    var byedpiBusy = false
+    var byedpiMessage: String?
+
     var bypassEnabled: Bool { profile.bypassEnabled }
     var bypassStrategyIndex: Int { profile.bypassStrategyIndex }
+
+    /// The DPI core the active profile uses, its strategy list, and whether it is installed.
+    var dpiEngine: DPIEngine { profile.dpiEngine }
+    var activeStrategies: [DPIStrategy] { profile.dpiEngine.strategies() }
+    var dpiCoreInstalled: Bool { profile.dpiEngine == .byedpi ? byedpiVersion != nil : tpwsVersion != nil }
+    var dpiCoreRunning: Bool { profile.dpiEngine == .byedpi ? byedpiRunning : tpwsRunning }
+    var dpiCoreError: String? { profile.dpiEngine == .byedpi ? byedpiError : tpwsError }
+
+    private func strategyFlags(_ index: Int) -> [String] {
+        let all = activeStrategies
+        return all.indices.contains(index) ? all[index].flags : (all.first?.flags ?? [])
+    }
+
+    /// Sends run/stop to the active engine's core (tpws or ByeDPI).
+    func sendDpiStrategy(_ flags: [String]?) {
+        if profile.dpiEngine == .byedpi { client.send(.byedpiStrategy(flags)) }
+        else { client.send(.tpwsStrategy(flags)) }
+    }
 
     func installTpws() {
         guard engineConnected else { return }
@@ -472,7 +496,7 @@ final class AppModel {
                 await MainActor.run {
                     self.client.send(.installTpws(path: ready.binaryPath, version: ready.version, sha256: ready.sha256))
                     self.tpwsMessage = String(localized: "Installing \(ready.version)…")
-                    self.addLog("DPI-bypass core \(ready.version) downloaded, installing", .notice)
+                    self.addLog("DPI-bypass core (tpws) \(ready.version) downloaded, installing", .notice)
                 }
             } catch {
                 await MainActor.run {
@@ -484,32 +508,71 @@ final class AppModel {
         }
     }
 
-    /// Turns DPI bypass on/off: runs tpws with the chosen strategy and tells the engine to route
-    /// direct connections through it.
+    func installByedpi() {
+        guard engineConnected else { return }
+        byedpiBusy = true
+        byedpiMessage = String(localized: "Downloading…")
+        Task {
+            do {
+                let ready = try await ByeDpiDownloader.prepare()
+                await MainActor.run {
+                    self.client.send(.installByedpi(path: ready.binaryPath, version: ready.version, sha256: ready.sha256))
+                    self.byedpiMessage = String(localized: "Installing \(ready.version)…")
+                    self.addLog("ByeDPI core \(ready.version) downloaded, installing", .notice)
+                }
+            } catch {
+                await MainActor.run {
+                    self.byedpiBusy = false
+                    self.byedpiMessage = nil
+                    self.alertMessage = String(localized: "Could not install ByeDPI: \(String(describing: error))")
+                }
+            }
+        }
+    }
+
+    /// Switches the active DPI engine: stops the old core, resets the strategy, and (if bypass is on)
+    /// starts the new one. The engine side follows `profile.dpiEngine` pushed with the config.
+    func setDpiEngine(_ engine: DPIEngine) {
+        guard engine != profile.dpiEngine else { return }
+        sendDpiStrategy(nil)                 // stop the core we are leaving
+        profile.dpiEngine = engine
+        profile.bypassStrategyIndex = 0
+        didAutoTune = false
+        if profile.bypassEnabled, dpiCoreInstalled {
+            sendDpiStrategy(strategyFlags(0))
+        }
+        addLog("DPI engine: \(engine.title)", .notice)
+    }
+
+    /// Turns DPI bypass on/off: runs the active core with the chosen strategy and tells the engine to
+    /// route direct connections through it.
     func setBypass(_ on: Bool) {
-        if on, tpwsVersion == nil {
+        if on, !dpiCoreInstalled {
             alertMessage = String(localized: "Install the DPI-bypass core first (DPI tab).")
             return
         }
         profile.bypassEnabled = on
         if on {
-            client.send(.tpwsStrategy(DPIStrategies.at(profile.bypassStrategyIndex).flags))
+            sendDpiStrategy(strategyFlags(profile.bypassStrategyIndex))
             client.send(.bypassDirect(true))
             addLog("DPI bypass on", .notice)
             autoTuneIfNeeded()
         } else {
             client.send(.bypassDirect(false))
-            client.send(.tpwsStrategy(nil))
+            sendDpiStrategy(nil)
             addLog("DPI bypass off", .notice)
         }
     }
 
     func selectStrategy(_ index: Int) {
         profile.bypassStrategyIndex = index
-        if profile.bypassEnabled { client.send(.tpwsStrategy(DPIStrategies.at(index).flags)) }
+        if profile.bypassEnabled { sendDpiStrategy(strategyFlags(index)) }
     }
 
     var tuning = false
+    /// Live step of the running auto-tune, and the last finished report (DPI page).
+    var tuneProgress: TuneProgress?
+    var tuneReport: TuneReport?
     @ObservationIgnored private var didAutoTune = false
 
     /// Test hosts for the DPI auto-tune, parsed from the editable list.
@@ -520,20 +583,85 @@ final class AppModel {
 
     /// Runs auto-tune once per session when bypass is on (on enable and on launch/reconnect).
     func autoTuneIfNeeded() {
-        guard !didAutoTune, profile.bypassEnabled, engineConnected, tpwsVersion != nil else { return }
+        guard !didAutoTune, profile.bypassEnabled, engineConnected, dpiCoreInstalled else { return }
         didAutoTune = true
         tuneBypass()
     }
 
-    /// Asks the engine to probe strategies against the test hosts and pick the first that works.
-    /// The probes run directly through tpws (bypassing VPN/proxy), so the test is always a direct hit.
+    /// Asks the engine to diagnose the test hosts and try the installed cores on the blocked ones.
+    /// The probes go straight out (never through VPN or a proxy) and dial the resolved IP with the
+    /// real name for SNI, so the result reflects this DNS + core + strategy, not the current routing.
     func tuneBypass() {
-        guard engineConnected, tpwsVersion != nil else {
+        guard engineConnected, tpwsVersion != nil || byedpiVersion != nil else {
             alertMessage = String(localized: "Install the DPI-bypass core first (DPI tab).")
             return
         }
         tuning = true
+        tuneProgress = nil
+        // The engine reads the DNS provider from the profile; push edits made a moment ago first.
+        client.send(.config(profile))
         client.send(.tuneBypass(hosts: dpiTestHosts))
+    }
+
+    func cancelTune() {
+        client.send(.cancelTune)
+    }
+
+    // MARK: - DNS
+
+    var dnsState: SystemDNSState { engineStatus?.dns ?? SystemDNSState() }
+    var dnsChecking = false
+    var dnsReport: DNSCheckReport?
+
+    func checkDNS(_ host: String) {
+        let name = host.trimmingCharacters(in: .whitespaces).lowercased()
+        guard engineConnected, DNSName.isValid(name) else { return }
+        dnsChecking = true
+        client.send(.config(profile))
+        client.send(.checkDNS(host: name))
+    }
+
+    func selectDNSProvider(_ id: String) {
+        profile.dns.providerID = id
+        dnsReport = nil
+    }
+
+    func setDNSTransport(_ transport: DNSTransport) {
+        profile.dns.transport = transport
+        dnsReport = nil
+    }
+
+    /// Adds a custom provider; returns the reason when the input is rejected.
+    func addDNSProvider(name: String, addresses: String, dohURL: String) -> DNSInputError? {
+        switch DNSProvider.custom(name: name, addresses: addresses, dohURL: dohURL) {
+        case .success(let provider):
+            profile.dns.customProviders.append(provider)
+            selectDNSProvider(provider.id)
+            return nil
+        case .failure(let error):
+            return error
+        }
+    }
+
+    func removeDNSProvider(_ id: String) {
+        var p = profile
+        p.dns.customProviders.removeAll { $0.id == id }
+        if p.dns.providerID == id { p.dns.providerID = DNSProviders.builtIn[0].id }
+        profile = p
+    }
+
+    /// Adds the short domain of each host apps cannot resolve to the provider-resolved list.
+    func resolveThroughProvider(hosts: [String]) {
+        var p = profile
+        var list = DNSDomainList.parse(p.dns.resolveDomains).valid
+        for host in hosts {
+            guard let d = DNSDomainList.suggestion(for: host), !DNSDomainList.covers(list, host: host) else { continue }
+            list.append(d)
+        }
+        p.dns.resolveDomains = list.joined(separator: "; ")
+        p.dns.resolveThroughProvider = true
+        profile = p
+        addLog("DNS: \(p.dns.upstream.title) now resolves \(list.joined(separator: ", "))", .notice)
     }
 
     // MARK: - AnyConnect (openconnect)
@@ -628,14 +756,24 @@ final class AppModel {
         }
     }
 
-    private func bypassTuned(_ index: Int) {
+    private func bypassTuned(_ report: TuneReport) {
         tuning = false
-        guard index >= 0 else {
-            alertMessage = String(localized: "No DPI-bypass strategy worked. Your ISP may use a block this tool can't defeat, or the test sites are reachable already.")
-            return
+        tuneProgress = nil
+        tuneReport = report
+        // Learn the hosts that really needed a bypass (not those that open directly).
+        let learned = report.hosts.filter { $0.ok && !$0.directOK }.map(\.host)
+        if !learned.isEmpty {
+            var p = profile
+            for host in learned where !p.bypassHosts.contains(host) { p.bypassHosts.append(host) }
+            profile = p
         }
-        selectStrategy(index)
-        addLog("DPI auto-tune picked \"\(DPIStrategies.at(index).label)\"", .notice)
+        guard report.verdict == .found, let engine = report.engine else { return }
+        let installed = engine == .byedpi ? byedpiVersion != nil : tpwsVersion != nil
+        guard installed else { return }
+        if engine != profile.dpiEngine { setDpiEngine(engine) }
+        selectStrategy(report.strategyIndex)
+        let label = activeStrategies.indices.contains(report.strategyIndex) ? activeStrategies[report.strategyIndex].label : ""
+        addLog("DPI auto-tune picked \(engine.title) \"\(label)\"", .notice)
     }
 
     // MARK: - Updates
@@ -1136,7 +1274,7 @@ final class AppModel {
             client.send(.xrayConfig(profile.activeVPNConfig()))
             client.send(.activeBridge(activeBridge))
             if profile.bypassEnabled {
-                client.send(.tpwsStrategy(DPIStrategies.at(profile.bypassStrategyIndex).flags))
+                sendDpiStrategy(strategyFlags(profile.bypassStrategyIndex))
                 client.send(.bypassDirect(true))
             }
             if wantRunning {
@@ -1167,8 +1305,13 @@ final class AppModel {
             switch message {
             case .pingResults(let subscription, let latencies):
                 applyLatencies(subscription, latencies)
-            case .bypassTuned(let index):
-                bypassTuned(index)
+            case .bypassTuned(let report):
+                bypassTuned(report)
+            case .tuneProgress(let progress):
+                tuneProgress = progress
+            case .dnsChecked(let report):
+                dnsChecking = false
+                dnsReport = report
             case .status(let status):
                 let wasRunning = isRunning
                 let prevXray = engineStatus?.xrayVersion
@@ -1186,8 +1329,11 @@ final class AppModel {
                 if tpwsBusy, status.tpwsVersion != nil {
                     tpwsBusy = false; tpwsMessage = nil
                 }
+                if byedpiBusy, status.byedpiVersion != nil {
+                    byedpiBusy = false; byedpiMessage = nil
+                }
                 if status.xrayVersion != nil || status.tpwsVersion != nil { checkForUpdates() }
-                if status.tpwsVersion != nil { autoTuneIfNeeded() }
+                if status.tpwsVersion != nil || status.byedpiVersion != nil { autoTuneIfNeeded() }
                 if xrayBusy, status.xrayVersion != nil {
                     xrayBusy = false
                     xrayMessage = nil

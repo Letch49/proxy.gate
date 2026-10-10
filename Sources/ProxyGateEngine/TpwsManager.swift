@@ -75,50 +75,37 @@ final class TpwsManager: @unchecked Sendable {
         lock.withLock { currentStrategy = nil }
     }
 
-    // MARK: - Auto-tune
-
-    /// Runs a throwaway tpws with `flags` and checks whether a blocked host becomes reachable through
-    /// it. Runs as _proxygate (pf passes its outbound) and curls over loopback, so it works even
-    /// while interception is on.
-    func probe(flags: [String], host: String) -> Bool {
-        guard installedVersion != nil else { return false }
-        let label = PGConstants.tpwsLabel + "-probe"
-        let port = PGConstants.tpwsSocksPort + 1
-        let plistPath = PGConstants.tpwsPlistPath.replacingOccurrences(of: ".plist", with: "-probe.plist")
-        let logPath = PGConstants.tpwsLogPath.replacingOccurrences(of: ".log", with: "-probe.log")
-        guard Self.validStrategy(flags) else { return false }
-        LaunchdJob.bootout(label)
-        defer { LaunchdJob.bootout(label); try? FileManager.default.removeItem(atPath: plistPath) }
-        guard (try? LaunchdJob.writePlist([
-            "Label": label,
-            "UserName": ServiceUser.name,
-            "GroupName": ServiceUser.name,
-            "ProgramArguments": [PGConstants.tpwsPath, "--socks", "--port=\(port)"] + flags,
-            "RunAtLoad": true,
-            "StandardErrorPath": logPath,
-            "StandardOutPath": logPath,
-        ], to: plistPath)) != nil else { return false }
-        LaunchdJob.prepareLog(logPath)
-        guard ServiceUser.shell("/bin/launchctl", ["bootstrap", "system", plistPath]).status == 0 else { return false }
-        for _ in 0..<15 {
-            usleep(200_000)
-            if LaunchdJob.running(label) { break }
-        }
-        let r = ServiceUser.shell("/usr/bin/curl", [
-            "-x", "socks5h://127.0.0.1:\(port)", "--max-time", "5", "-o", "/dev/null",
-            "-s", "-w", "%{http_code}", "https://\(host)/",
-        ])
-        let code = Int(r.output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-        return (200..<400).contains(code)
+    /// tpws command line for a SOCKS listener on loopback only (without --bind-addr tpws listens on
+    /// every interface, an open proxy for the LAN).
+    static func arguments(port: UInt16, flags: [String]) -> [String] {
+        [PGConstants.tpwsPath, "--socks", "--bind-addr=127.0.0.1", "--port=\(port)"] + flags
     }
 
-    /// Strategy flags the engine will accept — a strict allowlist so a hostile client can't smuggle
-    /// anything else onto the tpws command line (defence in depth on top of safe plist building).
+    /// Asks the installed tpws whether it accepts these flags (`--dry-run`), so a version mismatch
+    /// shows up as a launch error with tpws's own message instead of a silent failed probe.
+    func dryRun(_ flags: [String]) -> String? {
+        let r = Shell.run(PGConstants.tpwsPath, ["--socks", "--port=1", "--dry-run"] + flags)
+        if r.status == 0 { return nil }
+        let tail = r.output.split(separator: "\n").suffix(2).joined(separator: " ")
+        return tail.isEmpty ? "tpws rejected the flags (exit \(r.status))" : String(tail)
+    }
+
+    /// Desync options a strategy may carry. A strict name allowlist, so a hostile client cannot
+    /// smuggle --bind-addr (open proxy), --hostlist/--ipset (read files), --debug=@file (write files)
+    /// or --user onto the tpws command line; values are shape-checked as well.
+    static let allowedOptions: Set<String> = [
+        "split-pos", "split-any-protocol", "split-tls", "split-http-req", "disorder", "oob", "oob-data",
+        "hostcase", "hostspell", "hostdot", "hosttab", "hostnospace", "hostpad", "domcase",
+        "methodspace", "methodeol", "unixeol", "tlsrec", "tamper-start", "tamper-cutoff", "mss",
+    ]
+
     static func validStrategy(_ flags: [String]) -> Bool {
-        let re = try? NSRegularExpression(pattern: "^--[a-z][a-z0-9-]*(=[A-Za-z0-9,.:_+-]*)?$")
+        let re = try? NSRegularExpression(pattern: "^--([a-z][a-z0-9-]*)(=[A-Za-z0-9,.:_+-]*)?$")
+        guard flags.count <= 16 else { return false }
         return flags.allSatisfy { f in
-            guard let re else { return false }
-            return re.firstMatch(in: f, range: NSRange(f.startIndex..., in: f)) != nil
+            guard let re, let m = re.firstMatch(in: f, range: NSRange(f.startIndex..., in: f)),
+                  let name = Range(m.range(at: 1), in: f) else { return false }
+            return allowedOptions.contains(String(f[name]))
         }
     }
 
@@ -127,7 +114,7 @@ final class TpwsManager: @unchecked Sendable {
             "Label": PGConstants.tpwsLabel,
             "UserName": ServiceUser.name,
             "GroupName": ServiceUser.name,
-            "ProgramArguments": [PGConstants.tpwsPath, "--socks", "--port=\(PGConstants.tpwsSocksPort)"] + strategy,
+            "ProgramArguments": Self.arguments(port: PGConstants.tpwsSocksPort, flags: strategy),
             "RunAtLoad": true,
             "KeepAlive": true,
             "ProcessType": "Interactive",

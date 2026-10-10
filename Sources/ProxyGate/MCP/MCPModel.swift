@@ -52,7 +52,9 @@ extension AppModel {
     // MARK: - initialize instructions
 
     /// The hint the server returns in `initialize`, so the agent knows what it can do here.
-    static let mcpInstructions = """
+    /// `nonisolated` so `MCPServer.dispatch` can read it off the main actor; it is an immutable
+    /// String and touches no AppModel state.
+    nonisolated static let mcpInstructions = """
     ProxyGate routes each app's TCP connection by an ordered rule list: first enabled match wins, \
     the last rule is the catch-all Default. Use these tools to read and edit the rules and to \
     inspect the live log and stats.
@@ -189,7 +191,7 @@ extension AppModel {
             "chains": profile.chains.map { ["id": $0.id.uuidString, "name": $0.name] },
             "symbolicActions": ["direct", "block", "global", "vpn", "dpi"],
             "vpnAvailable": xrayVersion != nil && !profile.subscriptions.isEmpty,
-            "dpiAvailable": tpwsVersion != nil,
+            "dpiAvailable": dpiCoreInstalled,
             "geoAvailable": xrayVersion != nil,   // geosite.dat/geoip.dat ship with the VPN core
         ]
     }
@@ -227,7 +229,7 @@ extension AppModel {
             "redirectionOn": isRunning, "engineConnected": engineConnected, "helperInstalled": helperInstalled,
             "activeBridge": bridgeDescription,
             "vpnConnected": vpnConnected, "proxyConnected": proxyConnected,
-            "dpiBypassOn": bypassEnabled, "dpiCoreRunning": tpwsRunning,
+            "dpiBypassOn": bypassEnabled, "dpiCoreRunning": dpiCoreRunning,
             "anyConnectUp": anyConnectUp,
         ]
     }

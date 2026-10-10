@@ -127,8 +127,27 @@ public struct DNSSettings: Codable, Hashable, Sendable {
     public var sendHostnameToProxy = true
     /// How long to wait for the client's first bytes before falling back to the IP.
     public var sniffTimeoutMs = 300
+    /// DNS provider for diagnostics and for the domains below (built-in id or a custom one's id).
+    public var providerID = "google"
+    public var transport: DNSTransport = .doh
+    public var customProviders: [DNSProvider] = []
+    /// Make apps resolve `resolveDomains` through the provider (scoped /etc/resolver files pointing
+    /// at the engine's stub). Every other name, corporate ones included, stays on the system DNS.
+    public var resolveThroughProvider = false
+    public var resolveDomains = DNSSettings.defaultResolveDomains
+
+    public static let defaultResolveDomains = "youtube.com; googlevideo.com; ytimg.com; ggpht.com; youtu.be; youtube-nocookie.com"
 
     public init() {}
+
+    public var providers: [DNSProvider] { DNSProviders.builtIn + customProviders }
+
+    /// The selected provider, falling back to the first built-in if it was deleted.
+    public var provider: DNSProvider {
+        providers.first { $0.id == providerID } ?? DNSProviders.builtIn[0]
+    }
+
+    public var upstream: DNSUpstream { DNSUpstream(provider: provider, transport: transport) }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -136,6 +155,11 @@ public struct DNSSettings: Codable, Hashable, Sendable {
         sniffHostnames = try c.decodeIfPresent(Bool.self, forKey: .sniffHostnames) ?? d.sniffHostnames
         sendHostnameToProxy = try c.decodeIfPresent(Bool.self, forKey: .sendHostnameToProxy) ?? d.sendHostnameToProxy
         sniffTimeoutMs = try c.decodeIfPresent(Int.self, forKey: .sniffTimeoutMs) ?? d.sniffTimeoutMs
+        providerID = try c.decodeIfPresent(String.self, forKey: .providerID) ?? d.providerID
+        transport = try c.decodeIfPresent(DNSTransport.self, forKey: .transport) ?? d.transport
+        customProviders = try c.decodeIfPresent([DNSProvider].self, forKey: .customProviders) ?? []
+        resolveThroughProvider = try c.decodeIfPresent(Bool.self, forKey: .resolveThroughProvider) ?? false
+        resolveDomains = try c.decodeIfPresent(String.self, forKey: .resolveDomains) ?? d.resolveDomains
     }
 }
 
@@ -188,10 +212,20 @@ public struct Profile: Codable, Identifiable, Hashable, Sendable {
     public var routeLocalDirect = false
     /// DPI bypass (tpws) on direct routes.
     public var bypassEnabled = false
-    /// Index into DPIStrategies.all for the active desync strategy.
+    /// Which DPI-bypass core desyncs the traffic (tpws or ByeDPI).
+    public var dpiEngine: DPIEngine = .tpws
+    /// Index into the active engine's strategy list for the active desync strategy.
     public var bypassStrategyIndex = 0
     /// Hosts the DPI auto-tune probes (known-blocked sites), ";"-separated. Editable in Settings.
-    public var dpiTestHosts = "www.youtube.com; discord.com; rutracker.org; instagram.com"
+    public var dpiTestHosts = Profile.defaultDpiTestHosts
+    /// Apply DPI bypass only to known-blocked hosts (autohostlist) instead of all direct traffic.
+    /// With an empty `bypassHosts` it still applies to everything, so nothing silently stops working.
+    public var bypassAutohostlist = true
+    /// Hosts learned/known to need DPI bypass; matched as domain suffixes. Grown by the auto-tune.
+    public var bypassHosts: [String] = []
+
+    /// The video host goes along with the page: a page that opens says nothing about video streams.
+    public static let defaultDpiTestHosts = "www.youtube.com; redirector.googlevideo.com; discord.com; rutracker.org; instagram.com"
 
     public init(name: String, rules: [Rule]) {
         self.name = name
@@ -218,8 +252,11 @@ public struct Profile: Codable, Identifiable, Hashable, Sendable {
         hideUnreachableServers = try c.decodeIfPresent(Bool.self, forKey: .hideUnreachableServers) ?? true
         routeLocalDirect = try c.decodeIfPresent(Bool.self, forKey: .routeLocalDirect) ?? false
         bypassEnabled = try c.decodeIfPresent(Bool.self, forKey: .bypassEnabled) ?? false
+        dpiEngine = try c.decodeIfPresent(DPIEngine.self, forKey: .dpiEngine) ?? .tpws
         bypassStrategyIndex = try c.decodeIfPresent(Int.self, forKey: .bypassStrategyIndex) ?? 0
-        dpiTestHosts = try c.decodeIfPresent(String.self, forKey: .dpiTestHosts) ?? "www.youtube.com; discord.com; rutracker.org; instagram.com"
+        dpiTestHosts = try c.decodeIfPresent(String.self, forKey: .dpiTestHosts) ?? Profile.defaultDpiTestHosts
+        bypassAutohostlist = try c.decodeIfPresent(Bool.self, forKey: .bypassAutohostlist) ?? true
+        bypassHosts = try c.decodeIfPresent([String].self, forKey: .bypassHosts) ?? []
     }
 
     public var activeSubscription: Subscription? {

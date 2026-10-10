@@ -83,7 +83,8 @@ struct AnyConnectPage: View {
             else { Circle().fill(accent ? Theme.on : Theme.offFg).frame(width: 9, height: 9) }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.system(size: 14, weight: .semibold))
-                if let sub { Text(sub).font(.system(size: 12.5)).foregroundStyle(Theme.text2) }
+                // `sub` can be an engine message; look it up in the string table so ru/en match.
+                if let sub { Text(LocalizedStringKey(sub)).font(.system(size: 12.5)).foregroundStyle(Theme.text2) }
             }
             Spacer()
         }

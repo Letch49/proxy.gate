@@ -88,6 +88,26 @@ func isAny(_ entries: [String]) -> Bool {
     entries.isEmpty || entries.contains { $0.lowercased() == "any" }
 }
 
+/// Autohostlist for DPI bypass: decides whether a connection's host is one we bypass. Entries match
+/// the host and all its subdomains (`youtube.com` and `*.youtube.com` both cover `www.youtube.com`).
+public struct DPIBypassList: Sendable {
+    private let domains: [String]
+
+    public init(_ entries: [String]) {
+        domains = entries
+            .map { $0.lowercased().trimmingCharacters(in: .whitespaces) }
+            .map { $0.hasPrefix("*.") ? String($0.dropFirst(2)) : $0 }
+            .filter { !$0.isEmpty }
+    }
+
+    public var isEmpty: Bool { domains.isEmpty }
+
+    public func matches(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        return domains.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+}
+
 enum HostMatcher {
     case ip(IPAddr)
     case range(IPAddr, IPAddr)

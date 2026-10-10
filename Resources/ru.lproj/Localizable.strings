@@ -178,9 +178,7 @@
 /* DNS */
 "Detect target hostnames (TLS SNI / HTTP Host header)" = "Определять имена хостов (TLS SNI / заголовок HTTP Host)";
 "Wait for the client's first bytes: %lld ms" = "Ждать первые байты клиента: %lld мс";
-"Applications resolve names themselves, so ProxyGate only sees IP addresses. It reads the hostname from the TLS ClientHello or HTTP request, so rules like *.example.com work and the connection list shows names. Protocols where the server speaks first (SSH, SMTP) wait for this timeout once." = "Приложения сами резолвят имена, поэтому ProxyGate видит только IP. Имя хоста берётся из TLS ClientHello или HTTP-запроса — так работают правила вида *.example.com и в списке видны имена. Протоколы, где сервер говорит первым (SSH, SMTP), один раз ждут этот таймаут.";
 "Send hostnames to the proxy (resolve DNS through proxy)" = "Передавать прокси имена хостов (DNS через прокси)";
-"When a hostname was detected, the proxy receives the name instead of the IP address and resolves it itself. Recommended for corporate proxies." = "Если имя хоста известно, прокси получает имя вместо IP и резолвит его сам. Рекомендуется для корпоративных прокси.";
 
 /* Advanced */
 "Traffic redirection" = "Перенаправление трафика";
@@ -299,7 +297,6 @@
 "This Mac" = "Этот Mac";
 "Internet" = "Интернет";
 
-"How ProxyGate learns hostnames behind IP addresses." = "Как ProxyGate узнаёт имена хостов за IP-адресами.";
 "Interception, loop protection and the application itself." = "Перехват, защита от петель и само приложение.";
 "Loop detection" = "Обнаружение петель";
 "Detect connection loops" = "Обнаруживать петли соединений";
@@ -437,8 +434,15 @@
 "If sites are still blocked, try another strategy — effectiveness depends on your ISP. Auto-tune (probing which one works) comes next." = "Если сайты всё ещё блокируются — попробуй другую стратегию, эффективность зависит от провайдера. Авто-подбор (проверка, какая работает) будет следующим.";
 "%@ update available: %@" = "Доступно обновление %@: %@";
 "⚡ Auto-tune" = "⚡ Авто-подбор";
-"No DPI-bypass strategy worked. Your ISP may use a block this tool can't defeat, or the test sites are reachable already." = "Ни одна стратегия не сработала. Возможно, у провайдера блок, который этот метод не обходит, или тест-сайты и так доступны.";
-"If sites are still blocked, run Auto-tune or try another strategy — effectiveness depends on your ISP." = "Если сайты всё ещё блокируются — запусти «Авто-подбор» или выбери другую стратегию, эффективность зависит от провайдера.";
+"ByeDPI is not installed yet." = "ByeDPI ещё не установлен.";
+"Could not install ByeDPI: %@" = "Не удалось установить ByeDPI: %@";
+"Split, disorder, OOB." = "Разрезание, disorder, OOB.";
+"Bypass only blocked hosts" = "Обход только заблокированных хостов";
+"Bypass applies to all direct traffic." = "Обход применяется ко всему прямому трафику.";
+"Learning. Until the list fills, bypass applies to all direct traffic. Run Auto-tune to seed it." = "Обучение. Пока список пуст, обход идёт на весь прямой трафик. Запусти «Авто-подбор», чтобы наполнить список.";
+"Bypass is applied only to these hosts." = "Обход применяется только к этим хостам.";
+"Clear list" = "Очистить список";
+"Remove from the list" = "Убрать из списка";
 "Russian / local sites" = "Российские / локальные сайты";
 "+ Russian direct" = "+ РФ напрямую";
 "Add a rule: Russian / local sites → Direct (geosite/geoip)" = "Добавить правило: российские / локальные сайты → Напрямую (geosite/geoip)";
@@ -468,6 +472,7 @@
 "corporate subnets routed through the tunnel" = "корпоративные подсети идут через туннель";
 "%@ · VPN runs in parallel" = "%@ · VPN работает параллельно";
 "Not connected" = "Не подключено";
+"Could not protect the system DNS, so AnyConnect did not start. Reinstall openconnect." = "Не удалось защитить системный DNS, поэтому AnyConnect не запущен. Переустановите openconnect.";
 "%lld subnets" = "подсетей: %lld";
 "AnyConnect (openconnect)" = "AnyConnect (openconnect)";
 "openconnect" = "openconnect";
@@ -483,3 +488,65 @@
 "Overridden by an earlier rule — inactive" = "Перекрыто более ранним правилом — неактивно";
 "Auto-tune test sites" = "Сайты для авто-подбора";
 "Known-blocked hosts the DPI auto-tune probes. During the test they always go direct." = "Заведомо заблокированные сайты для авто-подбора DPI. На время теста они всегда идут напрямую.";
+
+/* DNS provider, app DNS, auto-tune diagnosis */
+"Name lookup for blocked sites and hostname detection." = "Разрешение имён для заблокированных сайтов и распознавание имён хостов.";
+"Provider" = "Провайдер";
+"Encrypted (DoH)" = "Шифрованный (DoH)";
+"Plain DNS" = "Обычный DNS";
+"Plain DNS can be rewritten on the way. DoH is encrypted." = "Обычный DNS могут подменить по пути. DoH зашифрован.";
+"A found address only means the name resolves. Whether the site opens is checked by Auto-tune on the DPI page." = "Найденный адрес значит только, что имя разрешается. Открывается ли сайт, проверяет авто-подбор на вкладке DPI.";
+"Hostname detection" = "Распознавание имён";
+"Apps resolve names themselves, so ProxyGate sees only IPs. It reads the name from the TLS or HTTP request, so rules like *.example.com work." = "Приложения сами разрешают имена, поэтому ProxyGate видит только IP. Имя берётся из запроса TLS или HTTP, поэтому работают правила вида *.example.com.";
+"Resolve blocked sites through the provider" = "Разрешать заблокированные сайты через провайдера";
+"Error" = "Ошибка";
+"Domains and their subdomains" = "Домены и их поддомены";
+"Skipped: %@" = "Пропущено: %@";
+"Your own resolver files win for: %@" = "Ваши файлы резолвера важнее для: %@";
+"Other names, corporate ones too, keep using the system DNS. Turned off when ProxyGate quits." = "Остальные имена, включая корпоративные, идут через системный DNS. Отключается при выходе из ProxyGate.";
+"Off. Apps use the system DNS." = "Выключено. Приложения используют системный DNS.";
+"%lld domains via %@" = "Доменов: %lld, через %@";
+"Apps use the system DNS for now." = "Пока приложения используют системный DNS.";
+"Plain only" = "Только обычный";
+"IP addresses" = "IP-адреса";
+"DoH address (optional)" = "Адрес DoH (необязательно)";
+"Enter a name." = "Введите название.";
+"Enter one to four IP addresses." = "Введите от одного до четырёх IP-адресов.";
+"DoH address must look like https://host/dns-query." = "Адрес DoH должен выглядеть как https://host/dns-query.";
+"The IP is used to reach the server, so a broken system DNS can't block it." = "Сервер вызывается по IP, поэтому сломанный системный DNS ему не мешает.";
+"Plain DNS and DoH gave different addresses. Plain DNS may be rewritten on the way." = "Обычный DNS и DoH вернули разные адреса. Обычный DNS могут подменять по пути.";
+"Found" = "Найден";
+"Not found" = "Не найден";
+"No address" = "Нет адреса";
+"No answer" = "Нет ответа";
+"Auto-tune checks DNS first, then each strategy of the installed cores. Effectiveness depends on your ISP." = "Авто-подбор сначала проверяет DNS, затем каждую стратегию установленных ядер. Результат зависит от провайдера.";
+"Checking DNS…" = "Проверка DNS…";
+"Checking direct access…" = "Проверка прямого доступа…";
+"Split, disorder, OOB, TLS records. Another way to cut the request." = "Split, disorder, OOB, TLS-записи. Другой способ разрезать запрос.";
+"Apps can't resolve some of these sites." = "Приложения не могут разрешить часть этих сайтов.";
+"Resolve via %@" = "Разрешать через %@";
+"A page that opens doesn't prove video works. Check playback too." = "Открытая страница не гарантирует работу видео. Проверьте и воспроизведение.";
+"DNS: %@ · %@ · %@" = "DNS: %@ · %@ · %@";
+"Found a working setup" = "Найдена рабочая связка";
+"The test sites open without bypass." = "Тестовые сайты открываются без обхода.";
+"Names did not resolve, so strategies were not tested. Check DNS." = "Имена не разрешились, поэтому стратегии не проверялись. Проверьте DNS.";
+"The DPI core did not start, so strategies were not tested." = "Ядро DPI не запустилось, поэтому стратегии не проверялись.";
+"The sites refuse connections by IP. DPI bypass can't help, use VPN." = "Сайты не принимают соединения по IP. Обход DPI не поможет, нужен VPN.";
+"No strategy helped on the reachable sites." = "Ни одна стратегия не помогла на доступных сайтах.";
+"Auto-tune stopped." = "Авто-подбор остановлен.";
+"Opens without bypass" = "Открывается без обхода";
+"Not blocked" = "Не заблокирован";
+"apps can't resolve it yet" = "приложения пока не разрешают имя";
+"System: %@. %@ didn't help either." = "Система: %@. %@ тоже не помог.";
+"The address refuses connections. DPI bypass can't help." = "Адрес не принимает соединения. Обход DPI не поможет.";
+"Wrong address or traffic inspection." = "Неверный адрес или проверка трафика.";
+"See the core error above." = "Ошибка ядра указана выше.";
+"Name not found" = "Имя не найдено";
+"DNS timeout" = "Таймаут DNS";
+"DNS error" = "Ошибка DNS";
+"No connection" = "Нет соединения";
+"TLS timeout" = "Таймаут TLS";
+"TLS error" = "Ошибка TLS";
+"Certificate error" = "Ошибка сертификата";
+"Core did not start" = "Ядро не запустилось";
+"No strategy helped" = "Стратегии не помогли";

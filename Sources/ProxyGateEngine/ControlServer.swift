@@ -87,10 +87,20 @@ final class ControlServer: @unchecked Sendable {
             case .tpwsStrategy(let strategy):
                 engine.applyTpws(strategy: strategy)
                 send(.status(engine.status))
+            case .installByedpi(let path, let version, let sha256):
+                engine.installByedpi(path: path, version: version, sha256: sha256)
+                send(.status(engine.status))
+            case .byedpiStrategy(let strategy):
+                engine.applyByedpi(strategy: strategy)
+                send(.status(engine.status))
             case .bypassDirect(let on):
                 engine.setBypassDirect(on)
             case .tuneBypass(let hosts):
                 engine.tuneBypass(hosts: hosts)
+            case .cancelTune:
+                engine.cancelTune()
+            case .checkDNS(let host):
+                engine.checkDNS(host: host)
             case .anyConnectConnect(let server, let user, let password):
                 engine.anyConnect.connect(server: server, user: user, password: password)
             case .anyConnectDisconnect:
@@ -104,6 +114,9 @@ final class ControlServer: @unchecked Sendable {
         }
         if wasCurrent {
             engine.stop()
+            engine.cancelTune()
+            // The resolver files point at our stub; without the app nobody manages them.
+            engine.releaseDNS()
         }
         sendQueue.sync {}
         channel.close()
